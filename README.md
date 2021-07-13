@@ -8,8 +8,7 @@ For Rust library usage, refer to the included tests, they are quite self-explana
 See the command line help part for usage on the binary debugger:
 
 ```
-$ ckb-debugger --help
-CKB standalone debugger 0.4.0
+ckb-debugger 0.5.0-rc1
 
 USAGE:
     ckb-debugger [FLAGS] [OPTIONS] --script-group-type <script-group-type> --tx-file <tx-file>
@@ -28,6 +27,7 @@ OPTIONS:
     -r, --replace-binary <replace-binary>          File used to replace the binary denoted in the script
     -g, --script-group-type <script-group-type>    Script group type [possible values: lock, type]
     -h, --script-hash <script-hash>                Script hash
+        --script-version <script-version>          Script version
         --skip-end <skip-end>                      End address to skip printing debug info
         --skip-start <skip-start>                  Start address to skip printing debug info
     -t, --tx-file <tx-file>                        Filename containing JSON formatted transaction dump

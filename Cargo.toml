@@ -1,7 +1,7 @@
 [package]
 name = "ckb-standalone-debugger"
 description = "Standalone debugger for Nervos CKB"
-version = "0.4.1"
+version = "0.5.0-rc1"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
@@ -11,10 +11,12 @@ exclude = ["bins", "js"]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ckb-error = "0.42.0"
-ckb-traits = "0.42.0"
-ckb-types = "0.42.0"
-ckb-jsonrpc-types = "0.42.0"
+ckb-chain-spec = { git="https://github.com/nervosnetwork/ckb", branch = "develop" }
+ckb-error = { git="https://github.com/nervosnetwork/ckb", branch = "develop" }
+ckb-traits = { git="https://github.com/nervosnetwork/ckb", branch = "develop" }
+ckb-types = { git="https://github.com/nervosnetwork/ckb", branch = "develop" }
+ckb-jsonrpc-types = { git="https://github.com/nervosnetwork/ckb", branch = "develop" }
+ckb-script = { git="https://github.com/nervosnetwork/ckb", branch = "develop", default-features = false, features = ["detect-asm"] }
 faster-hex = "0.4.0"
 serde = "1.0"
 serde_derive = "1.0"
@@ -23,11 +25,6 @@ serde_plain = "0.3.0"
 
 js-sys = "0.3.27"
 wasm-bindgen = "0.2.50"
-
-[dependencies.ckb-script]
-version = "0.42.0"
-default-features = false
-features = ["detect-asm"]
 
 [dev-dependencies]
 byteorder = "1.3.2"

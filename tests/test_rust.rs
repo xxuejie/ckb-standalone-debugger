@@ -97,6 +97,7 @@ pub fn test_bench() {
         &script_hash,
         20_000_000,
         None,
+        0,
     );
     assert_eq!(result.unwrap(), 58897);
 }

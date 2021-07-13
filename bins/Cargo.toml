@@ -1,6 +1,6 @@
 [package]
 name = "ckb-debugger-binaries"
-version = "0.4.1"
+version = "0.5.0-rc1"
 license = "MIT"
 authors = ["Nervos Core Dev <dev@nervos.org>"]
 edition = "2018"
@@ -12,11 +12,12 @@ path = "src/main.rs"
 
 [dependencies]
 clap = "2.33.0"
-ckb-script = "0.42.0"
+ckb-chain-spec = { git="https://github.com/nervosnetwork/ckb", branch = "develop" }
+ckb-script = { git="https://github.com/nervosnetwork/ckb", branch = "develop" }
 ckb-standalone-debugger = { path = ".." }
-ckb-types = "0.42.0"
-ckb-vm = { version = "0.19.3", features = ["detect-asm"] }
-ckb-vm-debug-utils = { git = "https://github.com/xxuejie/ckb-vm-debug-utils", rev = "f6e3605" }
+ckb-types = { git="https://github.com/nervosnetwork/ckb", branch = "develop" }
+ckb-vm = { version = "0.20.0-rc1", features = ["detect-asm"] }
+ckb-vm-debug-utils = { git = "https://github.com/libraries/ckb-vm-debug-utils", rev = "3540fc9" }
 env_logger = "0.4.3"
 faster-hex = "0.4.0"
 gdb-remote-protocol = { git = "https://github.com/luser/rust-gdb-remote-protocol", rev = "565ab0c" }

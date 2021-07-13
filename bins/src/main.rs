@@ -1,19 +1,25 @@
 #[macro_use]
 extern crate log;
 
+use ckb_chain_spec::consensus::ConsensusBuilder;
 use ckb_script::{
-    cost_model::transferred_byte_cycles, ScriptGroupType, TransactionScriptsVerifier,
+    cost_model::transferred_byte_cycles, ScriptGroupType, ScriptVersion,
+    TransactionScriptsVerifier, TxVerifyEnv,
 };
 use ckb_standalone_debugger::{
     transaction::{MockTransaction, ReprMockTransaction, Resource},
     DummyResourceLoader,
 };
 use ckb_types::{
-    core::{cell::resolve_transaction, Cycle},
+    core::{
+        cell::resolve_transaction, hardfork::HardForkSwitch, Cycle, EpochNumberWithFraction,
+        HeaderView,
+    },
     packed::Byte32,
+    prelude::Pack,
 };
 use ckb_vm::{
-    decoder::build_imac_decoder,
+    decoder::build_decoder,
     machine::asm::{AsmCoreMachine, AsmMachine},
     CoreMachine, DefaultMachineBuilder, SupportMachine,
 };
@@ -117,6 +123,12 @@ fn main() {
                 .help("File used to replace the binary denoted in the script")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("script-version")
+                .long("script-version")
+                .help("Script version")
+                .takes_value(true),
+        )
         .get_matches();
 
     let filename = matches.value_of("tx-file").unwrap();
@@ -173,6 +185,17 @@ fn main() {
         .parse()
         .expect("parse max cycle");
 
+    let script_version_u32: u32 = matches
+        .value_of("script-version")
+        .unwrap()
+        .parse()
+        .expect("parse vm version");
+    let script_version = if script_version_u32 == 0u32 {
+        ScriptVersion::V0
+    } else {
+        ScriptVersion::V1
+    };
+
     let resource = Resource::from_both(&mock_tx, DummyResourceLoader {}).expect("load resource");
     let tx = mock_tx.core_transaction();
     let rtx = {
@@ -180,7 +203,26 @@ fn main() {
         resolve_transaction(tx, &mut seen_inputs, &resource, &resource)
             .expect("resolve transaction")
     };
-    let mut verifier = TransactionScriptsVerifier::new(&rtx, &resource);
+    let hardfork_switch = HardForkSwitch::new_without_any_enabled()
+        .as_builder()
+        .rfc_pr_0234(200)
+        .rfc_pr_0237(200)
+        .build()
+        .unwrap();
+    let consensus = ConsensusBuilder::default()
+        .hardfork_switch(hardfork_switch)
+        .build();
+    let epoch = match script_version {
+        ScriptVersion::V0 => EpochNumberWithFraction::new(100, 0, 1),
+        ScriptVersion::V1 => EpochNumberWithFraction::new(300, 0, 1),
+    };
+    let tx_env = {
+        let header = HeaderView::new_advanced_builder()
+            .epoch(epoch.pack())
+            .build();
+        TxVerifyEnv::new_commit(&header)
+    };
+    let mut verifier = TransactionScriptsVerifier::new(&rtx, &consensus, &resource, &tx_env);
     verifier.set_debug_printer(Box::new(|hash: &Byte32, message: &str| {
         debug!("script group: {} DEBUG OUTPUT: {}", hash, message);
     }));
@@ -204,12 +246,16 @@ fn main() {
         for res in listener.incoming() {
             debug!("Got connection");
             if let Ok(stream) = res {
-                let core_machine = AsmCoreMachine::new_with_max_cycles(max_cycle);
+                let core_machine = AsmCoreMachine::new(
+                    script_version.vm_isa(),
+                    script_version.vm_version(),
+                    max_cycle,
+                );
                 let builder = DefaultMachineBuilder::new(core_machine)
                     .instruction_cycle_func(verifier.cost_model())
                     .syscall(Box::new(Stdio::new(true)));
                 let builder = verifier
-                    .generate_syscalls(script_group)
+                    .generate_syscalls(script_version, script_group)
                     .into_iter()
                     .fold(builder, |builder, syscall| builder.syscall(syscall));
                 let mut machine = AsmMachine::new(builder.build(), None);
@@ -226,7 +272,11 @@ fn main() {
         }
     } else {
         // Single run path
-        let core_machine = AsmCoreMachine::new_with_max_cycles(max_cycle);
+        let core_machine = AsmCoreMachine::new(
+            script_version.vm_isa(),
+            script_version.vm_version(),
+            max_cycle,
+        );
         let mut builder = DefaultMachineBuilder::new(core_machine)
             .instruction_cycle_func(verifier.cost_model())
             .syscall(Box::new(Stdio::new(false)));
@@ -238,7 +288,7 @@ fn main() {
             )));
         }
         let builder = verifier
-            .generate_syscalls(script_group)
+            .generate_syscalls(script_version, script_group)
             .into_iter()
             .fold(builder, |builder, syscall| builder.syscall(syscall));
         let mut machine = AsmMachine::new(builder.build(), None);
@@ -250,7 +300,7 @@ fn main() {
             .expect("load program cycles");
         let result = if matches.occurrences_of("step") > 0 {
             machine.machine.set_running(true);
-            let decoder = build_imac_decoder::<u64>();
+            let decoder = build_decoder::<u64>(script_version.vm_isa());
             let mut step_result = Ok(());
             let skip_range = if let (Some(s), Some(e)) =
                 (matches.value_of("skip-start"), matches.value_of("skip-end"))
