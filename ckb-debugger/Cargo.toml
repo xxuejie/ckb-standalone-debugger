@@ -9,15 +9,17 @@ edition = "2021"
 [features]
 default = []
 stdio = ["ckb-vm-debug-utils/stdio"]
-probes = ["probe"]
+probes = ["probe", "ckb-script/flatmemory"]
 
 [dependencies]
 clap = "2.33.0"
 ckb-debugger-api = { path = "../ckb-debugger-api" }
 ckb-mock-tx-types = { path = "../ckb-mock-tx-types" }
-ckb-script = { version="=0.107.0", default-features = false }
-ckb-types = "=0.107.0"
-ckb-vm = { version = "=0.22.1" }
+# ckb-script = { version="=0.107.0", default-features = false }
+# ckb-types = "=0.107.0"
+ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9", default-features = false }
+ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9" }
+ckb-vm = { version = "=0.22.2" }
 ckb-vm-debug-utils = { path = "../ckb-vm-debug-utils" }
 ckb-vm-pprof = { path = "../ckb-vm-pprof" }
 env_logger = "0.4.3"

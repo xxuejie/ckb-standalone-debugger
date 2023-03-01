@@ -1,7 +1,7 @@
 use byteorder::{ByteOrder, LittleEndian};
 use ckb_vm::{
-    decoder::build_decoder, CoreMachine, DefaultCoreMachine, DefaultMachine, Error as CkbError, Memory, SparseMemory,
-    SupportMachine, WXorXMemory, RISCV_GENERAL_REGISTER_NUMBER,
+    decoder::build_decoder, CoreMachine, DefaultCoreMachine, DefaultMachine, Error as CkbError, Memory, SupportMachine,
+    RISCV_GENERAL_REGISTER_NUMBER,
 };
 
 use gdb_remote_protocol::{
@@ -66,13 +66,13 @@ impl WatchPointStatus {
     }
 }
 
-pub struct GdbHandler<'a> {
-    machine: RefCell<DefaultMachine<'a, DefaultCoreMachine<u64, WXorXMemory<SparseMemory<u64>>>>>,
+pub struct GdbHandler<'a, M: Memory<REG = u64> + Default> {
+    machine: RefCell<DefaultMachine<'a, DefaultCoreMachine<u64, M>>>,
     breakpoints: RefCell<Vec<Breakpoint>>,
     watchpoints: RefCell<Vec<WatchPointStatus>>,
 }
 
-impl<'a> GdbHandler<'a> {
+impl<'a, M: Memory<REG = u64> + Default> GdbHandler<'a, M> {
     fn at_breakpoint(&self) -> bool {
         let pc = *self.machine.borrow().pc();
         self.breakpoints.borrow().iter().any(|b| b.addr == pc)
@@ -87,7 +87,7 @@ impl<'a> GdbHandler<'a> {
         Ok(result)
     }
 
-    pub fn new(machine: DefaultMachine<'a, DefaultCoreMachine<u64, WXorXMemory<SparseMemory<u64>>>>) -> Self {
+    pub fn new(machine: DefaultMachine<'a, DefaultCoreMachine<u64, M>>) -> Self {
         GdbHandler {
             machine: RefCell::new(machine),
             breakpoints: RefCell::new(vec![]),
@@ -96,7 +96,7 @@ impl<'a> GdbHandler<'a> {
     }
 }
 
-impl<'a> Handler for GdbHandler<'a> {
+impl<'a, M: Memory<REG = u64> + Default> Handler for GdbHandler<'a, M> {
     fn attached(&self, _pid: Option<u64>) -> Result<ProcessType, Error> {
         Ok(ProcessType::Created)
     }

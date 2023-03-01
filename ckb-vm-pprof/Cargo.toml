@@ -7,6 +7,6 @@ edition = "2021"
 [dependencies]
 addr2line = "0.13.0"
 clap = "2.33"
-ckb-vm = { version = "=0.22.1", features=["pprof"] }
+ckb-vm = { version = "=0.22.2", features=["pprof"] }
 goblin = "0.4"
 object = "0.20"
