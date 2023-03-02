@@ -10,9 +10,9 @@ authors = ["Nervos Core Dev <dev@nervos.org>"]
 
 [dependencies]
 # ckb-types = "=0.107.0"
-ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9" }
+ckb-types = { git = "https://github.com/nervosnetwork/ckb", rev = "a34bb55" }
 # ckb-jsonrpc-types = "=0.107.0"
-ckb-jsonrpc-types = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9" }
+ckb-jsonrpc-types = { git = "https://github.com/nervosnetwork/ckb", rev = "a34bb55" }
 # ckb-traits = "=0.107.0"
-ckb-traits = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9" }
+ckb-traits = { git = "https://github.com/nervosnetwork/ckb", rev = "a34bb55" }
 serde = { version = "1.0", features=["derive"] }

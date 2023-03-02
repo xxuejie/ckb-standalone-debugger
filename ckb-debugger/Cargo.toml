@@ -17,8 +17,8 @@ ckb-debugger-api = { path = "../ckb-debugger-api" }
 ckb-mock-tx-types = { path = "../ckb-mock-tx-types" }
 # ckb-script = { version="=0.107.0", default-features = false }
 # ckb-types = "=0.107.0"
-ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9", default-features = false }
-ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9" }
+ckb-script = { git = "https://github.com/nervosnetwork/ckb", rev = "a34bb55", default-features = false }
+ckb-types = { git = "https://github.com/nervosnetwork/ckb", rev = "a34bb55" }
 ckb-vm = { version = "=0.22.2" }
 ckb-vm-debug-utils = { path = "../ckb-vm-debug-utils" }
 ckb-vm-pprof = { path = "../ckb-vm-pprof" }
@@ -31,4 +31,4 @@ log = "0.4.0"
 rand = "0.8.5"
 serde_json = "1.0"
 serde_plain = "1.0"
-probe = { version = "0.4.0", optional = true }
+probe = { git = "https://github.com/xxuejie/rust-libprobe", rev = "b3b96b1", optional = true }

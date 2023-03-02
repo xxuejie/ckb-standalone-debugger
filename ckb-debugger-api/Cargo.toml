@@ -12,9 +12,9 @@ crate-type = ["cdylib", "rlib"]
 [dependencies]
 ckb-mock-tx-types = { path = "../ckb-mock-tx-types" }
 # ckb-script = { version="=0.107.0", default-features = false }
-ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9", default-features = false }
+ckb-script = { git = "https://github.com/nervosnetwork/ckb", rev = "a34bb55", default-features = false }
 # ckb-types = "=0.107.0"
-ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "c1154b9" }
+ckb-types = { git = "https://github.com/nervosnetwork/ckb", rev = "a34bb55" }
 faster-hex = "0.4.0"
 js-sys = "0.3.27"
 serde = { version="1.0", features = ["derive"] }
