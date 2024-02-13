@@ -10,13 +10,19 @@ edition = "2021"
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-ckb-hash = "=0.113.0"
-ckb-chain-spec = "=0.113.0"
-ckb-jsonrpc-types = "=0.113.0"
+# ckb-hash = "=0.113.0"
+# ckb-chain-spec = "=0.113.0"
+# ckb-jsonrpc-types = "=0.113.0"
+ckb-hash = { git = "https://github.com/xxuejie/ckb", rev = "2fbf14d" }
+ckb-chain-spec = { git = "https://github.com/xxuejie/ckb", rev = "2fbf14d" }
+ckb-jsonrpc-types = { git = "https://github.com/xxuejie/ckb", rev = "2fbf14d" }
 ckb-mock-tx-types = { path = "../ckb-mock-tx-types", version="0.113.0" }
-ckb-script = { version = "=0.113.0", default-features = false }
-ckb-types = "=0.113.0"
-ckb-vm = "=0.24.6"
+# ckb-script = { version = "=0.113.0", default-features = false }
+ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "2fbf14d", default-features = false }
+# ckb-types = "=0.113.0"
+ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "2fbf14d" }
+# ckb-vm = "=0.24.6"
+ckb-vm = { git = "https://github.com/xxuejie/ckb-vm", rev = "f31b1c2" }
 hex = "0.4"
 regex = "1"
 serde = { version="1.0", features = ["derive"] }

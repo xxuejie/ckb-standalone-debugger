@@ -9,5 +9,6 @@ license = "MIT"
 [dependencies]
 addr2line = "0.17.0"
 clap = "2.33"
-ckb-vm = { version = "=0.24.6", features=["pprof"] }
+# ckb-vm = { version = "=0.24.6", features=["pprof"] }
+ckb-vm = { git = "https://github.com/xxuejie/ckb-vm", rev = "f31b1c2", features = ["pprof"] }
 goblin = "0.4"

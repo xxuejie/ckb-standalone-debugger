@@ -13,7 +13,8 @@ stdio = ["libc", "nix"]
 [dependencies]
 byteorder = "1"
 bytes = "1.0.0"
-ckb-vm = "=0.24.6"
+# ckb-vm = "=0.24.6"
+ckb-vm = { git = "https://github.com/xxuejie/ckb-vm", rev = "f31b1c2" }
 ckb-gdb-remote-protocol = { path = "../ckb-gdb-remote-protocol", version="0.113.0" }
 libc = { version = "0.2.47", optional = true }
 log = "0.4.0"
