@@ -1,0 +1,193 @@
+syntax = "proto3";
+package generated.traces;
+
+message IOData {
+  uint64 input_offset = 1;
+  uint64 output_length = 2;
+  bytes available_data = 3;
+}
+
+enum TypeANumber {
+  LOAD_TRANSACTION_HASH = 0;
+  LOAD_TRANSACTION = 1;
+  LOAD_SCRIPT_HASH = 2;
+  LOAD_SCRIPT = 3;
+}
+
+message TypeA {
+  TypeANumber number = 1;
+  IOData data = 2;
+}
+
+enum TypeBNumber {
+  LOAD_CELL = 0;
+  LOAD_CELL_DATA = 1;
+  LOAD_INPUT = 2;
+  LOAD_HEADER = 3;
+  LOAD_WITNESS = 4;
+  LOAD_BLOCK_EXTENSION = 5;
+}
+
+message TypeB {
+  TypeBNumber number = 1;
+  uint64 input_index = 2;
+  uint64 input_source = 3;
+  IOData data = 4;
+}
+
+enum TypeCNumber {
+  LOAD_CELL_BY_FIELD = 0;
+  LOAD_INPUT_BY_FIELD = 1;
+  LOAD_HEADER_BY_FIELD = 2;
+}
+
+message TypeC {
+  TypeBNumber number = 1;
+  uint64 input_index = 2;
+  uint64 input_source = 3;
+  uint64 input_field = 5;
+  IOData data = 4;
+}
+
+message Debug {}
+
+message VMVersion {
+  int32 version = 1;
+}
+
+message CurrentCycles {
+  uint64 cycles = 1;
+}
+
+message Terminated {}
+
+message Exec {
+  uint64 input_index = 1;
+  uint64 input_source = 2;
+  uint64 input_place = 3;
+  uint64 input_bounds = 4;
+  repeated bytes input_argv = 5;
+  bool terminated = 6;
+}
+
+message Spawn {
+  uint64 input_index = 1;
+  uint64 input_source = 2;
+  uint64 input_place = 3;
+  uint64 input_bounds = 4;
+  repeated bytes input_argv = 5;
+  repeated uint64 input_inherited_fds = 6;
+  uint64 output_process_id = 7;
+}
+
+message Pipe {
+  uint64 fd0 = 1;
+  uint64 fd1 = 2;
+}
+
+message InheritedFds {
+  InheritedFdData fds = 1;
+  uint64 fd_count = 2;
+}
+
+message Read {
+  uint64 input_fd = 1;
+  bytes data = 2;
+}
+
+message Write {
+  uint64 input_fd = 1;
+  bytes input_data = 2;
+  uint64 output_length = 3;
+}
+
+message Close {
+  uint64 input_fd = 1;
+}
+
+message Wait {
+  uint64 input_pid = 1;
+  int32 output_exit_code = 2;
+}
+
+message ProcessId {
+  uint64 id = 1;
+}
+
+message Syscall {
+  int32 return_code = 1;
+
+  oneof value {
+    TypeA a = 2;
+    TypeB b = 3;
+    TypeC c = 4;
+    Debug debug = 5;
+    VMVersion version = 6;
+    CurrentCycles cycles = 7;
+    Exec exec = 8;
+    Spawn spawn = 9;
+    Pipe pipe = 10;
+    InheritedFds inherited_fds = 11;
+    Read read = 12;
+    Write write = 13;
+    Close close = 14;
+    Wait wait = 15;
+    ProcessId id = 16;
+  }
+}
+
+message Syscalls {
+  repeated Syscall syscalls = 1;
+}
+
+message InheritedFdData {
+  uint64 fd1 = 1;
+  uint64 fd2 = 2;
+}
+
+message ExecData {
+  bool terminated = 1;
+  int32 exit_code = 2;
+}
+
+message SpawnData {
+  uint64 pid = 1;
+  map<uint64, bytes> read_data = 2;
+}
+
+message Data {
+  bytes tx_hash = 1;
+  repeated bytes input_cells = 2;
+  repeated bytes input_cell_data = 3;
+  repeated bytes witnesses = 4;
+  repeated SpawnData spawns = 5;
+  repeated InheritedFdData inherited_fds = 6;
+  repeated ExecData execs = 7;
+
+  // TODO: add more potential fields
+}
+
+message Memory {
+  uint64 address = 1;
+  bytes content = 2;
+}
+
+message BlindSyscall {
+  uint64 syscall_number = 1;
+  uint64 return_code = 2;
+  repeated uint64 args = 3;
+  repeated Memory reads = 4;
+  repeated Memory writes = 5;
+}
+
+message BlindSyscalls {
+  repeated BlindSyscall syscall = 1;
+}
+
+message Environment {
+  oneof env {
+    Syscalls syscalls = 1;
+    Data data = 2;
+    BlindSyscalls blind_syscalls = 3;
+  }
+}

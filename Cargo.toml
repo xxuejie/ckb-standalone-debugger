@@ -15,12 +15,19 @@ version = "0.200.0"
 
 [workspace.dependencies]
 # CKB dependencies
-ckb-chain-spec = "=0.200.0"
-ckb-hash = "=0.200.0"
-ckb-jsonrpc-types = "=0.200.0"
-ckb-script = { version = "=0.200.0", default-features = false, features = ["flatmemory"] }
-ckb-traits = "=0.200.0"
-ckb-types = "=0.200.0"
+# ckb-chain-spec = "=0.200.0"
+# ckb-hash = "=0.200.0"
+# ckb-jsonrpc-types = "=0.200.0"
+# ckb-script = { version = "=0.200.0", default-features = false, features = ["flatmemory"] }
+# ckb-traits = "=0.200.0"
+# ckb-types = "=0.200.0"
+
+ckb-chain-spec = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
+ckb-hash = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
+ckb-jsonrpc-types = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
+ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8", default-features = false, features = ["flatmemory"] }
+ckb-traits = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
+ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
 ckb-vm = { version = "=0.24.13", default-features = false, features = ["pprof"] }
 
 # Crates defined in current workspace
@@ -46,6 +53,8 @@ libc = "0.2.132"
 log = "0.4.0"
 nix = "0.26.2"
 probe = "0.5"
+prost = "0.13.5"
+prost-build = "0.13.5"
 protoc-bin-vendored = "3.1"
 protobuf-codegen = "3.7"
 protobuf = { version = "3.7", features = ["with-bytes"] }
