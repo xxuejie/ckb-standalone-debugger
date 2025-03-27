@@ -8,6 +8,7 @@ members = [
     "ckb-vm-pprof-converter",
     "ckb-vm-pprof-protos",
     "ckb-vm-signal-profiler",
+    "ckb-vm-syscall-tracer",
 ]
 
 [workspace.package]
@@ -22,13 +23,13 @@ version = "0.200.0"
 # ckb-traits = "=0.200.0"
 # ckb-types = "=0.200.0"
 
-ckb-chain-spec = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
-ckb-hash = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
-ckb-jsonrpc-types = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
-ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8", default-features = false, features = ["flatmemory"] }
-ckb-traits = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
-ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "81cc2d8" }
-ckb-vm = { version = "=0.24.13", default-features = false, features = ["pprof"] }
+ckb-chain-spec = { git = "https://github.com/xxuejie/ckb", rev = "a2dac70" }
+ckb-hash = { git = "https://github.com/xxuejie/ckb", rev = "a2dac70" }
+ckb-jsonrpc-types = { git = "https://github.com/xxuejie/ckb", rev = "a2dac70" }
+ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "a2dac70", default-features = false, features = ["flatmemory"] }
+ckb-traits = { git = "https://github.com/xxuejie/ckb", rev = "a2dac70" }
+ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "a2dac70" }
+ckb-vm = { version = "=0.24.14", default-features = false, features = ["pprof"] }
 
 # Crates defined in current workspace
 ckb-debugger = { path = "ckb-debugger", version = "0.200.0" }

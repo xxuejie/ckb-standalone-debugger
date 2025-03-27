@@ -1,138 +1,39 @@
 syntax = "proto3";
 package generated.traces;
 
-message IOData {
-  uint64 input_offset = 1;
-  uint64 output_length = 2;
-  bytes available_data = 3;
-}
-
-enum TypeANumber {
-  LOAD_TRANSACTION_HASH = 0;
-  LOAD_TRANSACTION = 1;
-  LOAD_SCRIPT_HASH = 2;
-  LOAD_SCRIPT = 3;
-}
-
-message TypeA {
-  TypeANumber number = 1;
-  IOData data = 2;
-}
-
-enum TypeBNumber {
-  LOAD_CELL = 0;
-  LOAD_CELL_DATA = 1;
-  LOAD_INPUT = 2;
-  LOAD_HEADER = 3;
-  LOAD_WITNESS = 4;
-  LOAD_BLOCK_EXTENSION = 5;
-}
-
-message TypeB {
-  TypeBNumber number = 1;
-  uint64 input_index = 2;
-  uint64 input_source = 3;
-  IOData data = 4;
-}
-
-enum TypeCNumber {
-  LOAD_CELL_BY_FIELD = 0;
-  LOAD_INPUT_BY_FIELD = 1;
-  LOAD_HEADER_BY_FIELD = 2;
-}
-
-message TypeC {
-  TypeBNumber number = 1;
-  uint64 input_index = 2;
-  uint64 input_source = 3;
-  uint64 input_field = 5;
-  IOData data = 4;
-}
-
-message Debug {}
-
-message VMVersion {
-  int32 version = 1;
-}
-
-message CurrentCycles {
-  uint64 cycles = 1;
-}
-
+message Noop {}
 message Terminated {}
 
-message Exec {
-  uint64 input_index = 1;
-  uint64 input_source = 2;
-  uint64 input_place = 3;
-  uint64 input_bounds = 4;
-  repeated bytes input_argv = 5;
-  bool terminated = 6;
+message IoData {
+  bytes available_data = 1;
+  uint64 additional_length = 2;
 }
 
-message Spawn {
-  uint64 input_index = 1;
-  uint64 input_source = 2;
-  uint64 input_place = 3;
-  uint64 input_bounds = 4;
-  repeated bytes input_argv = 5;
-  repeated uint64 input_inherited_fds = 6;
-  uint64 output_process_id = 7;
-}
-
-message Pipe {
-  uint64 fd0 = 1;
-  uint64 fd1 = 2;
-}
-
-message InheritedFds {
-  InheritedFdData fds = 1;
-  uint64 fd_count = 2;
-}
-
-message Read {
-  uint64 input_fd = 1;
-  bytes data = 2;
-}
-
-message Write {
-  uint64 input_fd = 1;
-  bytes input_data = 2;
-  uint64 output_length = 3;
-}
-
-message Close {
-  uint64 input_fd = 1;
-}
-
-message Wait {
-  uint64 input_pid = 1;
-  int32 output_exit_code = 2;
-}
-
-message ProcessId {
-  uint64 id = 1;
+message Fds {
+  repeated uint64 fds = 1;
 }
 
 message Syscall {
-  int32 return_code = 1;
-
   oneof value {
-    TypeA a = 2;
-    TypeB b = 3;
-    TypeC c = 4;
-    Debug debug = 5;
-    VMVersion version = 6;
-    CurrentCycles cycles = 7;
-    Exec exec = 8;
-    Spawn spawn = 9;
-    Pipe pipe = 10;
-    InheritedFds inherited_fds = 11;
-    Read read = 12;
-    Write write = 13;
-    Close close = 14;
-    Wait wait = 15;
-    ProcessId id = 16;
+    // When a syscall exits with only a return code and no other data.
+    // It is used in syscalls such as vm version, current cycles, process
+    // ID. It is also used when a more complicated syscall returns with
+    // a non-zero exit code(and no other data have been returned).
+    int64 return_with_code = 1;
+    // In case the return code is 0(SUCCESS), a certain return value
+    // that fit in a 64-bit varible might be written to VM's memory
+    // as well. The spawned process ID in spawn syscalls, the bytes
+    // consumed in write syscalls, and the child process exit code
+    // in wait syscall all fall into this categories.
+    // That being said, it remains a question which of the following
+    // suits fuzzing better:
+    // 1) use a single field for all 3 syscalls;
+    // 2) split them into 3 different fields.
+    uint64 success_output_data = 2;
+    IoData io_data = 3;
+    Terminated terminated = 4;
+    Fds fds = 5;
+    Noop noop = 6;
   }
 }
 
@@ -140,54 +41,23 @@ message Syscalls {
   repeated Syscall syscalls = 1;
 }
 
-message InheritedFdData {
-  uint64 fd1 = 1;
-  uint64 fd2 = 2;
-}
-
-message ExecData {
-  bool terminated = 1;
-  int32 exit_code = 2;
-}
-
-message SpawnData {
-  uint64 pid = 1;
-  map<uint64, bytes> read_data = 2;
-}
-
-message Data {
+// This builds on top of Syscalls, and choose to keep certain data
+// structure as a single entity. It remains to be tested if it will
+// provide better results for fuzzing.
+message Parts {
   bytes tx_hash = 1;
   repeated bytes input_cells = 2;
   repeated bytes input_cell_data = 3;
   repeated bytes witnesses = 4;
-  repeated SpawnData spawns = 5;
-  repeated InheritedFdData inherited_fds = 6;
-  repeated ExecData execs = 7;
+  repeated uint64 inherited_fds = 5;
+  map<uint64, bytes> read_data = 6;
 
-  // TODO: add more potential fields
+  repeated Syscall other_syscalls = 7;
 }
 
-message Memory {
-  uint64 address = 1;
-  bytes content = 2;
-}
-
-message BlindSyscall {
-  uint64 syscall_number = 1;
-  uint64 return_code = 2;
-  repeated uint64 args = 3;
-  repeated Memory reads = 4;
-  repeated Memory writes = 5;
-}
-
-message BlindSyscalls {
-  repeated BlindSyscall syscall = 1;
-}
-
-message Environment {
-  oneof env {
-    Syscalls syscalls = 1;
-    Data data = 2;
-    BlindSyscalls blind_syscalls = 3;
+message Root {
+  oneof value {
+    Parts parts = 1;
+    Syscalls syscalls = 3;
   }
 }

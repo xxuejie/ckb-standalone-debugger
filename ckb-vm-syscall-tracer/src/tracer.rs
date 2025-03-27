@@ -1,11 +1,11 @@
 use ckb_chain_spec::consensus::ConsensusBuilder;
 use ckb_mock_tx_types::{MockTransaction, ReprMockTransaction, Resource};
-use ckb_script::{TransactionScriptsVerifier, TxVerifyEnv};
+use ckb_script::{types::Machine, TransactionScriptsVerifier, TxVerifyEnv};
 use ckb_types::{
     core::{cell::resolve_transaction, hardfork, EpochNumberWithFraction, HeaderView},
-    packed::Byte32,
     prelude::*,
 };
+use ckb_vm_syscall_tracer::{Collector, SyscallBasedCollector};
 use clap::Parser;
 use std::collections::HashSet;
 use std::io::Read;
@@ -43,7 +43,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let resolved_transaction =
         resolve_transaction(mock_tx.core_transaction(), &mut HashSet::new(), &resource, &resource)?;
 
-    let verifier = {
+    let collector = SyscallBasedCollector::default();
+    let verifier: TransactionScriptsVerifier<_, _, Machine> = {
         let hardforks = hardfork::HardForks {
             ckb2021: hardfork::CKB2021::new_mirana().as_builder().rfc_0032(20).build().unwrap(),
             ckb2023: hardfork::CKB2023::new_mirana().as_builder().rfc_0049(30).build().unwrap(),
@@ -52,20 +53,21 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let epoch = EpochNumberWithFraction::new(35, 0, 1);
         let header_view = HeaderView::new_advanced_builder().epoch(epoch.pack()).build();
         let tx_env = Arc::new(TxVerifyEnv::new_commit(&header_view));
-        let mut v = TransactionScriptsVerifier::new(
-            Arc::new(resolved_transaction.clone()),
-            resource.clone(),
-            consensus.clone(),
-            tx_env.clone(),
-        );
-        v.set_debug_printer(Box::new(move |_hash: &Byte32, message: &str| {
-            let message = message.trim_end_matches('\n');
-            if message != "" {
-                println!("Script log: {}", message);
-            }
-        }));
-        v
+        TransactionScriptsVerifier::new_with_generator(
+            Arc::new(resolved_transaction),
+            resource,
+            consensus,
+            tx_env,
+            // TODO: make it a cli flag
+            SyscallBasedCollector::syscall_generator,
+            collector.clone(),
+        )
     };
+
+    // TODO: verify one at a time, make place for postprocess
+    verifier.verify(u64::MAX)?;
+
+    let data = collector.seal();
 
     Ok(())
 }

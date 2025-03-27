@@ -18,11 +18,13 @@ ckb-chain-spec.workspace = true
 ckb-mock-tx-types.workspace = true
 ckb-script.workspace = true
 ckb-types.workspace = true
+ckb-traits.workspace = true
 ckb-vm.workspace = true
 prost.workspace = true
 serde_json.workspace = true
 
 clap = { version = "4.5.32", features = ["cargo", "derive"] }
+int-enum = "1.1.2"
 
 [build-dependencies]
 prost-build.workspace = true
