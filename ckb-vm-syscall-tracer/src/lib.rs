@@ -20,14 +20,40 @@ use ckb_vm::{
     registers::{A0, A1, A2, A3, A4, A7},
     CoreMachine, DefaultMachineRunner, Error, Memory, Register, SupportMachine, Syscalls,
 };
+use clap::ValueEnum;
 use int_enum::IntEnum;
 use prost::Message;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+pub enum CollectorKind {
+    /// Syscall based collector, data from each syscall are collected for replays.
+    Syscall,
+
+    /// Tx based collector, certain data are collected from the tx as a whole
+    TxParts,
+}
+
+impl TryFrom<&[u8]> for traces::Parts {
+    type Error = String;
+
+    fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
+        Self::decode(v).map_err(|e| format!("prost decoding error: {}", e))
+    }
+}
+
 impl From<traces::Parts> for Vec<u8> {
     fn from(value: traces::Parts) -> Self {
         value.encode_to_vec()
+    }
+}
+
+impl TryFrom<&[u8]> for traces::Syscalls {
+    type Error = String;
+
+    fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
+        Self::decode(v).map_err(|e| format!("prost decoding error: {}", e))
     }
 }
 
@@ -38,7 +64,7 @@ impl From<traces::Syscalls> for Vec<u8> {
 }
 
 pub trait Collector: Clone + Default {
-    type Trace: Into<Vec<u8>>;
+    type Trace: Into<Vec<u8>> + for<'a> TryFrom<&'a [u8]> + std::fmt::Debug;
 
     fn syscall_generator<DL, M>(
         vm_id: &VmId,

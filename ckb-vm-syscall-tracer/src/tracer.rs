@@ -6,21 +6,12 @@ use ckb_types::{
     packed::Byte32,
     prelude::*,
 };
-use ckb_vm_syscall_tracer::{Collector, SyscallBasedCollector, TxPartsBasedCollector};
+use ckb_vm_syscall_tracer::{Collector, CollectorKind, SyscallBasedCollector, TxPartsBasedCollector};
 use clap::{Parser, ValueEnum};
 use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
-
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
-enum CollectorKind {
-    /// Syscall based collector, data from each syscall are collected for replays.
-    Syscall,
-
-    /// Tx based collector, certain data are collected from the tx as a whole
-    TxParts,
-}
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum GroupKind {

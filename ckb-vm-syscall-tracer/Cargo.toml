@@ -9,6 +9,10 @@ autobins = false
 name = "ckb-vm-syscall-tracer"
 path = "src/tracer.rs"
 
+[[bin]]
+name = "ckb-vm-syscall-reader"
+path = "src/reader.rs"
+
 [features]
 default = []
 asm = ["ckb-script/asm"]
