@@ -59,7 +59,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
 }
 
-fn run<C: Collector>(collector: C, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+fn run<C>(collector: C, cli: &Cli) -> Result<(), Box<dyn std::error::Error>>
+where
+    C: Collector,
+    Vec<u8>: From<<C as Collector>::Trace>,
+{
     // TODO: figure out later if utilities in ckb-debugger crate, such as
     // analyze is worth using.
     let mock_tx: ReprMockTransaction = if cli.tx_file == "-" {

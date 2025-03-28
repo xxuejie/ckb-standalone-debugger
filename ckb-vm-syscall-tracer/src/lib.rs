@@ -115,7 +115,7 @@ pub enum CollectorResult<T> {
 }
 
 pub trait Collector: Clone + Default {
-    type Trace: Into<Vec<u8>> + for<'a> TryFrom<&'a [u8]> + std::fmt::Debug;
+    type Trace;
 
     fn syscall_generator<DL, M>(
         vm_id: &VmId,

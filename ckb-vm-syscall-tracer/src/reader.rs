@@ -21,9 +21,9 @@ fn main() -> Result<(), Error> {
     }
 }
 
-fn run<C: Collector>(cli: &Cli) -> Result<(), Error>
+fn run<C>(cli: &Cli) -> Result<(), Error>
 where
-    Error: for<'a> From<<<C as Collector>::Trace as TryFrom<&'a [u8]>>::Error>,
+    C: Collector<Trace: for<'a> TryFrom<&'a [u8], Error = Error> + std::fmt::Debug>,
 {
     for file in &cli.files {
         let data = std::fs::read(file).map_err(|e| Error::IO { kind: e.kind(), data: format!("{}", e) })?;
