@@ -15,7 +15,7 @@ impl<'a, M> ReadonlyMachine<'a, M> {
     }
 }
 
-impl<'a, M: SupportMachine> Memory for ReadonlyMachine<'a, M> {
+impl<M: SupportMachine> Memory for ReadonlyMachine<'_, M> {
     type REG = M::REG;
 
     fn new() -> Self {
@@ -114,7 +114,7 @@ impl<'a, M: SupportMachine> Memory for ReadonlyMachine<'a, M> {
     }
 }
 
-impl<'a, M: SupportMachine> CoreMachine for ReadonlyMachine<'a, M> {
+impl<M: SupportMachine> CoreMachine for ReadonlyMachine<'_, M> {
     type REG = M::REG;
     type MEM = Self;
 
@@ -155,7 +155,7 @@ impl<'a, M: SupportMachine> CoreMachine for ReadonlyMachine<'a, M> {
     }
 }
 
-impl<'a, M: SupportMachine> SupportMachine for ReadonlyMachine<'a, M> {
+impl<M: SupportMachine> SupportMachine for ReadonlyMachine<'_, M> {
     fn new_with_memory(_isa: u8, _version: u32, _max_cycles: u64, _memory_size: usize) -> Self
     where
         Self: Sized,
@@ -218,8 +218,8 @@ where
 {
     pub fn new(snapshot: &'a Snapshot2<I>, source: &'a D) -> Self {
         let mut registers: [R; RISCV_GENERAL_REGISTER_NUMBER] = Default::default();
-        for i in 0..RISCV_GENERAL_REGISTER_NUMBER {
-            registers[i] = R::from_u64(snapshot.registers[i]);
+        for (i, v) in snapshot.registers.iter().enumerate() {
+            registers[i] = R::from_u64(*v);
         }
 
         Self {
@@ -276,7 +276,7 @@ where
     }
 }
 
-impl<'a, I, D, R> Memory for ReadonlySnapshotMachine<'a, I, D, R>
+impl<I, D, R> Memory for ReadonlySnapshotMachine<'_, I, D, R>
 where
     I: Clone + PartialEq,
     D: DataSource<I>,
@@ -390,7 +390,7 @@ where
     }
 }
 
-impl<'a, I, D, R> CoreMachine for ReadonlySnapshotMachine<'a, I, D, R>
+impl<I, D, R> CoreMachine for ReadonlySnapshotMachine<'_, I, D, R>
 where
     I: Clone + PartialEq,
     D: DataSource<I>,
@@ -436,7 +436,7 @@ where
     }
 }
 
-impl<'a, I, D, R> SupportMachine for ReadonlySnapshotMachine<'a, I, D, R>
+impl<I, D, R> SupportMachine for ReadonlySnapshotMachine<'_, I, D, R>
 where
     I: Clone + PartialEq,
     D: DataSource<I>,

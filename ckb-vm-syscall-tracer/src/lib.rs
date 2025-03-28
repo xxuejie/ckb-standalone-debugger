@@ -69,22 +69,14 @@ impl TxPartsBasedCollector {
     fn fetch<V, F: Fn(&traces::Parts) -> V>(&self, vm_id: &VmId, f: F) -> V {
         let mut m = self.data.lock().expect("lock");
 
-        if !m.contains_key(vm_id) {
-            m.insert(*vm_id, traces::Parts::default());
-        }
-        let parts = m.get(vm_id).unwrap();
-
+        let parts = m.entry(*vm_id).or_default();
         f(parts)
     }
 
     fn modify<F: Fn(&mut traces::Parts)>(&mut self, vm_id: &VmId, f: F) {
         let mut m = self.data.lock().expect("lock");
 
-        if !m.contains_key(vm_id) {
-            m.insert(*vm_id, traces::Parts::default());
-        }
-        let parts = m.get_mut(vm_id).unwrap();
-
+        let parts = m.entry(*vm_id).or_default();
         f(parts);
     }
 }
@@ -130,10 +122,7 @@ impl Collector for TxPartsBasedCollector {
     fn seal(self) -> HashMap<VmId, Self::Trace> {
         let mut m = self.data.lock().expect("lock").clone();
         for (vm_id, syscalls) in self.syscall_collector.seal() {
-            if !m.contains_key(&vm_id) {
-                m.insert(vm_id, traces::Parts::default());
-            }
-            m.get_mut(&vm_id).unwrap().other_syscalls = syscalls.syscalls;
+            m.entry(vm_id).or_default().other_syscalls = syscalls.syscalls;
         }
         m
     }
@@ -217,11 +206,7 @@ impl SyscallBasedCollector {
     fn insert(&self, vm_id: VmId, syscall: traces::Syscall) {
         let mut m = self.data.lock().expect("lock");
 
-        if !m.contains_key(&vm_id) {
-            m.insert(vm_id, traces::Syscalls { syscalls: Vec::new() });
-        }
-
-        m.get_mut(&vm_id).unwrap().syscalls.push(syscall);
+        m.entry(vm_id).or_default().syscalls.push(syscall);
     }
 }
 
@@ -256,7 +241,7 @@ impl Collector for SyscallBasedCollector {
             // For runnable VMs, apply the partial content for syscall traces
             if scheduler.state(vm_id) == Some(VmState::Runnable) {
                 let syscall = scheduler.peek(
-                    &vm_id,
+                    vm_id,
                     |machine| apply_partial_content(partial_content, &mut ReadonlyMachine::new(machine.inner_mut())),
                     |snapshot, sg_data| {
                         apply_partial_content(
@@ -305,11 +290,28 @@ impl<M: SupportMachine> Syscalls<M> for SyscallBasedCollectorVMSyscalls<M> {
         let mut c = self.data.partial_contents.lock().expect("lock");
         assert!(!c.contains_key(&self.vm_id));
 
-        if let Some(content) = build_partial_content(machine)? {
-            c.insert(self.vm_id, content);
+        let partial_content = build_partial_content(machine)?;
+
+        let result = delegate_to_syscalls(machine, &mut self.syscalls);
+        if let Some(partial_content) = partial_content {
+            match result {
+                Ok(true) => {
+                    // Syscall is completed, we can apply partial content now
+                    let data = apply_partial_content(&partial_content, &mut ReadonlyMachine::new(machine))?;
+                    self.data.insert(self.vm_id, data);
+                }
+                Err(Error::Yield) => {
+                    // Wait till the VM becomes runnable again to apply partial content
+                    c.insert(self.vm_id, partial_content);
+                }
+                _ => {
+                    // The syscall is not handled, or unrecoverable errors happen,
+                    // we don't do anything here.
+                }
+            }
         }
 
-        delegate_to_syscalls(machine, &mut self.syscalls)
+        result
     }
 }
 
@@ -542,7 +544,7 @@ fn delegate_to_syscalls<M: SupportMachine>(
 fn debug_printer() -> DebugPrinter {
     Arc::new(|_hash: &Byte32, message: &str| {
         let message = message.trim_end_matches('\n');
-        if message != "" {
+        if !message.is_empty() {
             println!("Script log: {}", message);
         }
     })
