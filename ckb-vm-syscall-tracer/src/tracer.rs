@@ -1,17 +1,10 @@
-use ckb_chain_spec::consensus::ConsensusBuilder;
-use ckb_mock_tx_types::{MockTransaction, ReprMockTransaction, Resource};
-use ckb_script::{types::Machine, ScriptGroupType, TransactionScriptsVerifier, TxVerifyEnv};
-use ckb_types::{
-    core::{cell::resolve_transaction, hardfork, EpochNumberWithFraction, HeaderView},
-    packed::Byte32,
-    prelude::*,
-};
-use ckb_vm_syscall_tracer::{Collector, CollectorKind, SyscallBasedCollector, TxPartsBasedCollector};
+use ckb_mock_tx_types::ReprMockTransaction;
+use ckb_script::ScriptGroupType;
+use ckb_types::{packed::Byte32, prelude::*};
+use ckb_vm_syscall_tracer::{Collector, CollectorKind, CollectorResult, SyscallBasedCollector, TxPartsBasedCollector};
 use clap::{Parser, ValueEnum};
-use std::collections::HashSet;
 use std::io::Read;
 use std::path::Path;
-use std::sync::Arc;
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
 enum GroupKind {
@@ -66,7 +59,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 fn run<C: Collector>(collector: C, cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
-    let verifier = build_verifier(collector.clone(), &cli.tx_file)?;
+    // TODO: figure out later if utilities in ckb-debugger crate, such as
+    // analyze is worth using.
+    let mock_tx: ReprMockTransaction = if cli.tx_file == "-" {
+        let mut buf = String::new();
+        std::io::stdin().read_to_string(&mut buf)?;
+        serde_json::from_str(&buf)
+    } else {
+        let buf = std::fs::read_to_string(&cli.tx_file)?;
+        serde_json::from_str(&buf)
+    }?;
+    let verifier = collector.build_verifier(mock_tx)?;
 
     let script_group = if let Some(script_hash) = &cli.script_hash {
         verifier.find_script_group(cli.script_group.into(), script_hash)
@@ -75,28 +78,24 @@ fn run<C: Collector>(collector: C, cli: &Cli) -> Result<(), Box<dyn std::error::
     };
 
     if let Some(script_group) = script_group {
-        let mut scheduler = verifier.create_scheduler(script_group)?;
-        loop {
-            let iteration_result = scheduler.iterate()?;
-            if let Some((exit_code, cycles)) = iteration_result.exit_status {
-                if exit_code != 0 {
-                    println!("Root VM terminates with non-zero exit code: {}, terminating...", exit_code);
-                    std::process::abort();
-                }
+        match collector.collect(&verifier, script_group)? {
+            CollectorResult::Success { sealed_data, cycles } => {
                 println!("Script group consumes {} cycles.", cycles);
-                break;
+
+                let output_path = Path::new(&cli.output);
+                let vms = sealed_data.len();
+                for (vm_id, trace) in sealed_data {
+                    let file_path = output_path.join(format!("vm_{}.traces", vm_id));
+                    let bytes: Vec<u8> = trace.into();
+                    std::fs::write(file_path, bytes)?
+                }
+                println!("Traces for {} VMs have been written to {}.", vms, cli.output);
             }
-            collector.postprocess(&mut scheduler)?;
+            CollectorResult::Failure { exit_code } => {
+                println!("Root VM terminates with non-zero exit code: {}, terminating...", exit_code);
+                std::process::abort();
+            }
         }
-        let data = collector.seal();
-        let output_path = Path::new(&cli.output);
-        let vms = data.len();
-        for (vm_id, trace) in data {
-            let file_path = output_path.join(format!("vm_{}.traces", vm_id));
-            let bytes: Vec<u8> = trace.into();
-            std::fs::write(file_path, bytes)?
-        }
-        println!("Traces for {} VMs have been written to {}.", vms, cli.output);
     } else {
         println!("Either you didn't specify a script group, or the script group you provided does not exist!");
         println!("Please use one of the following script hash:\n");
@@ -109,43 +108,4 @@ fn run<C: Collector>(collector: C, cli: &Cli) -> Result<(), Box<dyn std::error::
     }
 
     Ok(())
-}
-
-fn build_verifier<C: Collector>(
-    collector: C,
-    tx_file: &str,
-) -> Result<TransactionScriptsVerifier<Resource, C, Machine>, Box<dyn std::error::Error>> {
-    // TODO: figure out later if utilities in ckb-debugger crate, such as
-    // analyze is worth using.
-    let mock_tx: MockTransaction = if tx_file == "-" {
-        let mut buf = String::new();
-        std::io::stdin().read_to_string(&mut buf)?;
-        let repr_mock_tx: ReprMockTransaction = serde_json::from_str(&buf)?;
-        repr_mock_tx.into()
-    } else {
-        let buf = std::fs::read_to_string(tx_file)?;
-        let repr_mock_tx: ReprMockTransaction = serde_json::from_str(&buf)?;
-        repr_mock_tx.into()
-    };
-
-    let resource = Resource::from_mock_tx(&mock_tx)?;
-    let resolved_transaction =
-        resolve_transaction(mock_tx.core_transaction(), &mut HashSet::new(), &resource, &resource)?;
-
-    let hardforks = hardfork::HardForks {
-        ckb2021: hardfork::CKB2021::new_mirana().as_builder().rfc_0032(20).build().unwrap(),
-        ckb2023: hardfork::CKB2023::new_mirana().as_builder().rfc_0049(30).build().unwrap(),
-    };
-    let consensus = Arc::new(ConsensusBuilder::default().hardfork_switch(hardforks).build());
-    let epoch = EpochNumberWithFraction::new(35, 0, 1);
-    let header_view = HeaderView::new_advanced_builder().epoch(epoch.pack()).build();
-    let tx_env = Arc::new(TxVerifyEnv::new_commit(&header_view));
-    Ok(TransactionScriptsVerifier::new_with_generator(
-        Arc::new(resolved_transaction),
-        resource,
-        consensus,
-        tx_env,
-        C::syscall_generator,
-        collector.clone(),
-    ))
 }

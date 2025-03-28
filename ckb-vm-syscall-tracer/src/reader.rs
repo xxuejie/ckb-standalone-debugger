@@ -1,3 +1,4 @@
+use ckb_vm::Error;
 use ckb_vm_syscall_tracer::{Collector, CollectorKind, SyscallBasedCollector, TxPartsBasedCollector};
 use clap::Parser;
 
@@ -11,7 +12,7 @@ struct Cli {
     files: Vec<String>,
 }
 
-fn main() -> Result<(), String> {
+fn main() -> Result<(), Error> {
     let cli = Cli::parse();
 
     match cli.collector {
@@ -20,12 +21,12 @@ fn main() -> Result<(), String> {
     }
 }
 
-fn run<C: Collector>(cli: &Cli) -> Result<(), String>
+fn run<C: Collector>(cli: &Cli) -> Result<(), Error>
 where
-    std::string::String: for<'a> From<<<C as Collector>::Trace as TryFrom<&'a [u8]>>::Error>,
+    Error: for<'a> From<<<C as Collector>::Trace as TryFrom<&'a [u8]>>::Error>,
 {
     for file in &cli.files {
-        let data = std::fs::read(file).map_err(|e| format!("IO error: {}", e))?;
+        let data = std::fs::read(file).map_err(|e| Error::IO { kind: e.kind(), data: format!("{}", e) })?;
         let trace = C::Trace::try_from(&data)?;
 
         println!("Content for {}:", file);

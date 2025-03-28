@@ -9,13 +9,20 @@ use crate::{
     generated::traces,
     readonly_machines::{ReadonlyMachine, ReadonlySnapshotMachine},
 };
+use ckb_chain_spec::consensus::ConsensusBuilder;
+use ckb_mock_tx_types::{MockTransaction, Resource};
 use ckb_script::{
     generate_ckb_syscalls,
     types::{DebugPrinter, ScriptGroup, SgData, VmContext, VmId, VmState},
     Scheduler,
 };
+use ckb_script::{types::Machine, TransactionScriptsVerifier, TxVerifyEnv};
 use ckb_traits::{CellDataProvider, ExtensionProvider, HeaderProvider};
-use ckb_types::{packed::Byte32, prelude::*};
+use ckb_types::{
+    core::{cell::resolve_transaction, hardfork, EpochNumberWithFraction, HeaderView},
+    packed::Byte32,
+    prelude::*,
+};
 use ckb_vm::{
     registers::{A0, A1, A2, A3, A4, A7},
     CoreMachine, DefaultMachineRunner, Error, Memory, Register, SupportMachine, Syscalls,
@@ -23,7 +30,7 @@ use ckb_vm::{
 use clap::ValueEnum;
 use int_enum::IntEnum;
 use prost::Message;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
@@ -36,10 +43,10 @@ pub enum CollectorKind {
 }
 
 impl TryFrom<&[u8]> for traces::Parts {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
-        Self::decode(v).map_err(|e| format!("prost decoding error: {}", e))
+        Self::decode(v).map_err(|e| Error::External(format!("prost decoding error: {}", e)))
     }
 }
 
@@ -50,10 +57,10 @@ impl From<traces::Parts> for Vec<u8> {
 }
 
 impl TryFrom<&[u8]> for traces::Syscalls {
-    type Error = String;
+    type Error = Error;
 
     fn try_from(v: &[u8]) -> Result<Self, Self::Error> {
-        Self::decode(v).map_err(|e| format!("prost decoding error: {}", e))
+        Self::decode(v).map_err(|e| Error::External(format!("prost decoding error: {}", e)))
     }
 }
 
@@ -61,6 +68,12 @@ impl From<traces::Syscalls> for Vec<u8> {
     fn from(value: traces::Syscalls) -> Self {
         value.encode_to_vec()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum CollectorResult<T> {
+    Success { sealed_data: HashMap<VmId, T>, cycles: u64 },
+    Failure { exit_code: i8 },
 }
 
 pub trait Collector: Clone + Default {
@@ -83,6 +96,56 @@ pub trait Collector: Clone + Default {
         M: DefaultMachineRunner;
 
     fn seal(self) -> HashMap<VmId, Self::Trace>;
+
+    fn build_verifier<T: Into<MockTransaction>>(
+        &self,
+        tx: T,
+    ) -> Result<TransactionScriptsVerifier<Resource, Self, Machine>, Error> {
+        let mock_tx = tx.into();
+
+        let resource = Resource::from_mock_tx(&mock_tx).map_err(Error::External)?;
+        let resolved_transaction =
+            resolve_transaction(mock_tx.core_transaction(), &mut HashSet::new(), &resource, &resource)
+                .map_err(|e| Error::External(format!("resolving transaction error: {}", e)))?;
+
+        let hardforks = hardfork::HardForks {
+            ckb2021: hardfork::CKB2021::new_mirana().as_builder().rfc_0032(20).build().unwrap(),
+            ckb2023: hardfork::CKB2023::new_mirana().as_builder().rfc_0049(30).build().unwrap(),
+        };
+        let consensus = Arc::new(ConsensusBuilder::default().hardfork_switch(hardforks).build());
+        let epoch = EpochNumberWithFraction::new(35, 0, 1);
+        let header_view = HeaderView::new_advanced_builder().epoch(epoch.pack()).build();
+        let tx_env = Arc::new(TxVerifyEnv::new_commit(&header_view));
+        Ok(TransactionScriptsVerifier::new_with_generator(
+            Arc::new(resolved_transaction),
+            resource,
+            consensus,
+            tx_env,
+            Self::syscall_generator,
+            self.clone(),
+        ))
+    }
+
+    fn collect(
+        self,
+        verifier: &TransactionScriptsVerifier<Resource, Self, Machine>,
+        script_group: &ScriptGroup,
+    ) -> Result<CollectorResult<Self::Trace>, Error> {
+        let mut scheduler = verifier
+            .create_scheduler(script_group)
+            .map_err(|e| Error::External(format!("scheduler creation error: {}", e)))?;
+        let cycles = loop {
+            let iteration_result = scheduler.iterate()?;
+            if let Some((exit_code, cycles)) = iteration_result.exit_status {
+                if exit_code != 0 {
+                    return Ok(CollectorResult::Failure { exit_code });
+                }
+                break cycles;
+            }
+            self.postprocess(&mut scheduler)?;
+        };
+        Ok(CollectorResult::Success { sealed_data: self.seal(), cycles })
+    }
 }
 
 #[derive(Default, Clone)]
