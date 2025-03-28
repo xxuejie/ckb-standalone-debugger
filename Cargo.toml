@@ -23,12 +23,12 @@ version = "0.200.0"
 # ckb-traits = "=0.200.0"
 # ckb-types = "=0.200.0"
 
-ckb-chain-spec = { git = "https://github.com/xxuejie/ckb", rev = "3fda7cc" }
-ckb-hash = { git = "https://github.com/xxuejie/ckb", rev = "3fda7cc" }
-ckb-jsonrpc-types = { git = "https://github.com/xxuejie/ckb", rev = "3fda7cc" }
-ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "3fda7cc", default-features = false, features = ["flatmemory"] }
-ckb-traits = { git = "https://github.com/xxuejie/ckb", rev = "3fda7cc" }
-ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "3fda7cc" }
+ckb-chain-spec = { git = "https://github.com/xxuejie/ckb", rev = "9b8314e" }
+ckb-hash = { git = "https://github.com/xxuejie/ckb", rev = "9b8314e" }
+ckb-jsonrpc-types = { git = "https://github.com/xxuejie/ckb", rev = "9b8314e" }
+ckb-script = { git = "https://github.com/xxuejie/ckb", rev = "9b8314e", default-features = false, features = ["flatmemory"] }
+ckb-traits = { git = "https://github.com/xxuejie/ckb", rev = "9b8314e" }
+ckb-types = { git = "https://github.com/xxuejie/ckb", rev = "9b8314e" }
 ckb-vm = { version = "=0.24.14", default-features = false, features = ["pprof"] }
 
 # Crates defined in current workspace

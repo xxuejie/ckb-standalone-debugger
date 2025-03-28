@@ -26,6 +26,7 @@ ckb-traits.workspace = true
 ckb-vm.workspace = true
 hex.workspace = true
 prost.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 
 clap = { version = "4.5.32", features = ["cargo", "derive"] }

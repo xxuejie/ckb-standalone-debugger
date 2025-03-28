@@ -14,7 +14,7 @@ use ckb_mock_tx_types::{MockTransaction, Resource};
 use ckb_script::{
     generate_ckb_syscalls,
     types::{DebugPrinter, ScriptGroup, SgData, VmContext, VmId, VmState},
-    Scheduler,
+    Scheduler, ROOT_VM_ID,
 };
 use ckb_script::{types::Machine, TransactionScriptsVerifier, TxVerifyEnv};
 use ckb_traits::{CellDataProvider, ExtensionProvider, HeaderProvider};
@@ -27,9 +27,10 @@ use ckb_vm::{
     registers::{A0, A1, A2, A3, A4, A7},
     CoreMachine, DefaultMachineRunner, Error, Memory, Register, SupportMachine, Syscalls,
 };
-use clap::ValueEnum;
+use clap::{Args, ValueEnum};
 use int_enum::IntEnum;
 use prost::Message;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex};
 
@@ -70,9 +71,46 @@ impl From<traces::Syscalls> for Vec<u8> {
     }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, Args)]
+pub struct BinaryLocator {
+    /// Index of requested cell or witness
+    #[arg(long)]
+    pub index: u64,
+
+    /// Source of requested cell or witness
+    #[arg(long)]
+    pub source: u64,
+
+    /// Starting offset of binary in cell or witnes
+    #[arg(long)]
+    pub offset: u32,
+
+    /// Length of binary
+    #[arg(long)]
+    pub length: u32,
+
+    /// True to load from a cell, false to load from a witness
+    #[arg(long, value_parser = parse_from_cell, default_value_t = true)]
+    pub from_cell: bool,
+}
+
+fn parse_from_cell(s: &str) -> Result<bool, String> {
+    if s == "t" || s == "true" {
+        Ok(true)
+    } else {
+        Ok(false)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct CollectorKey {
+    pub vm_id: VmId,
+    pub generation_id: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CollectorResult<T> {
-    Success { sealed_data: HashMap<VmId, T>, cycles: u64 },
+    Success { cycles: u64, traces: HashMap<CollectorKey, T>, locators: HashMap<CollectorKey, BinaryLocator> },
     Failure { exit_code: i8 },
 }
 
@@ -95,7 +133,7 @@ pub trait Collector: Clone + Default {
         V: Clone,
         M: DefaultMachineRunner;
 
-    fn seal(self) -> HashMap<VmId, Self::Trace>;
+    fn seal(self) -> HashMap<CollectorKey, Self::Trace>;
 
     fn build_verifier<T: Into<MockTransaction>>(
         &self,
@@ -144,28 +182,51 @@ pub trait Collector: Clone + Default {
             }
             self.postprocess(&mut scheduler)?;
         };
-        Ok(CollectorResult::Success { sealed_data: self.seal(), cycles })
+
+        // TODO: use a wrapper syscall to obtain all binary locators
+        let mut locators = HashMap::default();
+        locators.insert(
+            CollectorKey { vm_id: ROOT_VM_ID, generation_id: 0 },
+            BinaryLocator {
+                index: scheduler
+                    .sg_data()
+                    .tx_info
+                    .extract_referenced_dep_index(&script_group.script)
+                    .map_err(|e| Error::External(format!("extract dep index: {}", e)))? as u64,
+                source: Source::CellDep as u64,
+                offset: 0,
+                length: verifier
+                    .extract_script(&script_group.script)
+                    .map_err(|e| Error::External(format!("extract script error: {}", e)))?
+                    .len() as u32,
+                from_cell: true,
+            },
+        );
+
+        Ok(CollectorResult::Success { cycles, traces: self.seal(), locators })
     }
 }
 
 #[derive(Default, Clone)]
 pub struct TxPartsBasedCollector {
     syscall_collector: SyscallBasedCollector,
-    data: Arc<Mutex<HashMap<VmId, traces::Parts>>>,
+    data: Arc<Mutex<HashMap<CollectorKey, traces::Parts>>>,
 }
 
 impl TxPartsBasedCollector {
-    fn fetch<V, F: Fn(&traces::Parts) -> V>(&self, vm_id: &VmId, f: F) -> V {
+    fn fetch<V, F: Fn(&traces::Parts) -> V>(&self, vm_id: VmId, f: F) -> V {
+        let key = self.syscall_collector.key(vm_id);
         let mut m = self.data.lock().expect("lock");
 
-        let parts = m.entry(*vm_id).or_default();
+        let parts = m.entry(key).or_default();
         f(parts)
     }
 
-    fn modify<F: Fn(&mut traces::Parts)>(&mut self, vm_id: &VmId, f: F) {
+    fn modify<F: Fn(&mut traces::Parts)>(&mut self, vm_id: VmId, f: F) {
+        let key = self.syscall_collector.key(vm_id);
         let mut m = self.data.lock().expect("lock");
 
-        let parts = m.entry(*vm_id).or_default();
+        let parts = m.entry(key).or_default();
         f(parts);
     }
 }
@@ -208,10 +269,10 @@ impl Collector for TxPartsBasedCollector {
         self.syscall_collector.postprocess(scheduler)
     }
 
-    fn seal(self) -> HashMap<VmId, Self::Trace> {
+    fn seal(self) -> HashMap<CollectorKey, Self::Trace> {
         let mut m = self.data.lock().expect("lock").clone();
-        for (vm_id, syscalls) in self.syscall_collector.seal() {
-            m.entry(vm_id).or_default().other_syscalls = syscalls.syscalls;
+        for (key, syscalls) in self.syscall_collector.seal() {
+            m.entry(key).or_default().other_syscalls = syscalls.syscalls;
         }
         m
     }
@@ -244,7 +305,7 @@ impl<DL: CellDataProvider + Send + Sync, M: SupportMachine> Syscalls<M> for TxPa
             match code {
                 SyscallCode::LoadTxHash => {
                     let tx_hash = self.sg_data.rtx.transaction.hash();
-                    self.data.modify(&self.vm_id, |parts| {
+                    self.data.modify(self.vm_id, |parts| {
                         parts.tx_hash = tx_hash.as_slice().to_vec();
                     });
                     skip_syscall_based_collector = true;
@@ -255,7 +316,7 @@ impl<DL: CellDataProvider + Send + Sync, M: SupportMachine> Syscalls<M> for TxPa
 
                     if let Some(actual_index) = locate_input(index, source, &self.sg_data.sg_info.script_group) {
                         let fill_length = std::cmp::min(actual_index + 1, self.sg_data.rtx.resolved_inputs.len());
-                        let already_filled_length = self.data.fetch(&self.vm_id, |parts| parts.input_cells.len());
+                        let already_filled_length = self.data.fetch(self.vm_id, |parts| parts.input_cells.len());
 
                         if already_filled_length < fill_length {
                             let inputs: Vec<Vec<u8>> = self
@@ -268,9 +329,61 @@ impl<DL: CellDataProvider + Send + Sync, M: SupportMachine> Syscalls<M> for TxPa
                                 .map(|meta| meta.cell_output.as_slice().to_vec())
                                 .collect();
 
-                            self.data.modify(&self.vm_id, |parts| parts.input_cells.extend_from_slice(&inputs));
-                            skip_syscall_based_collector = true;
+                            self.data.modify(self.vm_id, |parts| parts.input_cells.extend_from_slice(&inputs));
                         }
+                        skip_syscall_based_collector = true;
+                    }
+                }
+                SyscallCode::LoadCellData => {
+                    let index = machine.registers()[A3].to_u64();
+                    let source = machine.registers()[A4].to_u64();
+
+                    if let Some(actual_index) = locate_input(index, source, &self.sg_data.sg_info.script_group) {
+                        let fill_length = std::cmp::min(actual_index + 1, self.sg_data.rtx.resolved_inputs.len());
+                        let already_filled_length = self.data.fetch(self.vm_id, |parts| parts.input_cell_data.len());
+
+                        if already_filled_length < fill_length {
+                            let input_data: Vec<Vec<u8>> = self
+                                .sg_data
+                                .rtx
+                                .resolved_inputs
+                                .iter()
+                                .skip(already_filled_length)
+                                .take(fill_length - already_filled_length)
+                                .map(|meta| {
+                                    self.sg_data.data_loader().load_cell_data(meta).expect("load data").to_vec()
+                                })
+                                .collect();
+
+                            self.data.modify(self.vm_id, |parts| parts.input_cell_data.extend_from_slice(&input_data));
+                        }
+                        skip_syscall_based_collector = true;
+                    }
+                }
+                SyscallCode::LoadWitness => {
+                    let index = machine.registers()[A3].to_u64();
+                    let source = machine.registers()[A4].to_u64();
+
+                    if let Some(actual_index) = locate_witness(index, source, &self.sg_data.sg_info.script_group) {
+                        let fill_length =
+                            std::cmp::min(actual_index + 1, self.sg_data.rtx.transaction.witnesses().len());
+                        let already_filled_length = self.data.fetch(self.vm_id, |parts| parts.witnesses.len());
+
+                        if already_filled_length < fill_length {
+                            let witnesses: Vec<Vec<u8>> = self
+                                .sg_data
+                                .rtx
+                                .transaction
+                                .witnesses()
+                                .into_iter()
+                                .skip(already_filled_length)
+                                .take(fill_length - already_filled_length)
+                                .map(|witness| witness.raw_data().to_vec())
+                                .collect();
+
+                            self.data.modify(self.vm_id, |parts| parts.witnesses.extend_from_slice(&witnesses));
+                        }
+                        skip_syscall_based_collector = true;
                     }
                 }
                 _ => (),
@@ -287,15 +400,38 @@ impl<DL: CellDataProvider + Send + Sync, M: SupportMachine> Syscalls<M> for TxPa
 
 #[derive(Default, Clone)]
 pub struct SyscallBasedCollector {
-    partial_contents: Arc<Mutex<HashMap<VmId, PartialSyscallContent>>>,
-    data: Arc<Mutex<HashMap<VmId, traces::Syscalls>>>,
+    partial_contents: Arc<Mutex<HashMap<CollectorKey, PartialSyscallContent>>>,
+    generations: Arc<Mutex<HashMap<VmId, u64>>>,
+    data: Arc<Mutex<HashMap<CollectorKey, traces::Syscalls>>>,
 }
 
 impl SyscallBasedCollector {
-    fn insert(&self, vm_id: VmId, syscall: traces::Syscall) {
-        let mut m = self.data.lock().expect("lock");
+    fn fulfill(&self, key: CollectorKey, syscall: traces::Syscall) {
+        let is_terminated =
+            syscall == (traces::Syscall { value: Some(traces::syscall::Value::Terminated(traces::Terminated {})) });
 
-        m.entry(vm_id).or_default().syscalls.push(syscall);
+        self.partial_contents.lock().expect("lock").remove(&key);
+        self.data.lock().expect("lock").entry(key.clone()).or_default().syscalls.push(syscall);
+        if is_terminated {
+            self.increase_generation(key.vm_id);
+        }
+    }
+
+    fn generation(&self, vm_id: VmId) -> u64 {
+        let mut m = self.generations.lock().expect("lock");
+
+        *m.entry(vm_id).or_default()
+    }
+
+    fn increase_generation(&self, vm_id: VmId) {
+        let mut m = self.generations.lock().expect("lock");
+
+        *m.entry(vm_id).or_default() += 1;
+    }
+
+    pub fn key(&self, vm_id: VmId) -> CollectorKey {
+        let generation_id = self.generation(vm_id);
+        CollectorKey { vm_id, generation_id }
     }
 }
 
@@ -325,12 +461,12 @@ impl Collector for SyscallBasedCollector {
         V: Clone,
         M: DefaultMachineRunner,
     {
-        let mut partial_contents_to_remove = vec![];
-        for (vm_id, partial_content) in self.partial_contents.lock().expect("lock").iter() {
+        let mut fulfills = vec![];
+        for (key, partial_content) in self.partial_contents.lock().expect("lock").iter() {
             // For runnable VMs, apply the partial content for syscall traces
-            if scheduler.state(vm_id) == Some(VmState::Runnable) {
+            if scheduler.state(&key.vm_id) == Some(VmState::Runnable) {
                 let syscall = scheduler.peek(
-                    vm_id,
+                    &key.vm_id,
                     |machine| apply_partial_content(partial_content, &mut ReadonlyMachine::new(machine.inner_mut())),
                     |snapshot, sg_data| {
                         apply_partial_content(
@@ -343,20 +479,16 @@ impl Collector for SyscallBasedCollector {
                         )
                     },
                 )?;
-                self.insert(*vm_id, syscall);
-                partial_contents_to_remove.push(*vm_id);
+                fulfills.push((key.clone(), syscall));
             }
         }
-        {
-            let mut m = self.partial_contents.lock().expect("lock");
-            for vm_id in partial_contents_to_remove {
-                m.remove(&vm_id);
-            }
+        for (key, syscall) in fulfills {
+            self.fulfill(key, syscall);
         }
         Ok(())
     }
 
-    fn seal(self) -> HashMap<VmId, Self::Trace> {
+    fn seal(self) -> HashMap<CollectorKey, Self::Trace> {
         self.data.lock().expect("lock").clone()
     }
 }
@@ -376,8 +508,8 @@ impl<M: SupportMachine> Syscalls<M> for SyscallBasedCollectorVMSyscalls<M> {
     }
 
     fn ecall(&mut self, machine: &mut M) -> Result<bool, Error> {
-        let mut c = self.data.partial_contents.lock().expect("lock");
-        assert!(!c.contains_key(&self.vm_id));
+        let key = self.data.key(self.vm_id);
+        assert!(!self.data.partial_contents.lock().expect("lock").contains_key(&key));
 
         let partial_content = build_partial_content(machine)?;
 
@@ -387,11 +519,11 @@ impl<M: SupportMachine> Syscalls<M> for SyscallBasedCollectorVMSyscalls<M> {
                 Ok(true) => {
                     // Syscall is completed, we can apply partial content now
                     let data = apply_partial_content(&partial_content, &mut ReadonlyMachine::new(machine))?;
-                    self.data.insert(self.vm_id, data);
+                    self.data.fulfill(key, data.clone());
                 }
                 Err(Error::Yield) => {
                     // Wait till the VM becomes runnable again to apply partial content
-                    c.insert(self.vm_id, partial_content);
+                    self.data.partial_contents.lock().expect("lock").insert(key, partial_content);
                 }
                 _ => {
                     // The syscall is not handled, or unrecoverable errors happen,
@@ -500,6 +632,14 @@ fn apply_partial_content<M: SupportMachine>(
             if return_code != 0 {
                 return return_syscall(return_code);
             }
+            // TODO: a new trace should be used here. In other words, sealed data should use
+            // a pair of 2 keys:
+            //
+            // 1. VM ID
+            // 2. VM generation ID, each successful invocation creates a new VM generation ID
+            //
+            // It might make sense to include the code_hash / hash_type pair for creating a VM
+            // instance in the key as well, so one can group traces based on script.
             traces::Syscall { value: Some(traces::syscall::Value::Terminated(traces::Terminated {})) }
         }
         PartialSyscallContent::Spawn => {
@@ -577,7 +717,7 @@ fn return_syscall(code: i64) -> Result<traces::Syscall, Error> {
 
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, IntEnum)]
-enum SyscallCode {
+pub enum SyscallCode {
     LoadTransaction = 2051,
     LoadScript = 2052,
     LoadTxHash = 2061,
@@ -608,7 +748,7 @@ enum SyscallCode {
 
 #[repr(u64)]
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, IntEnum)]
-enum Source {
+pub enum Source {
     Input = 1,
     Output = 2,
     CellDep = 3,
@@ -640,10 +780,21 @@ fn debug_printer() -> DebugPrinter {
 }
 
 fn locate_input(index: u64, source: u64, script_group: &ScriptGroup) -> Option<usize> {
-    if source == 1 {
+    if source == Source::Input as u64 {
         return Some(index as usize);
     } else if source == Source::GroupInput as u64 {
         return script_group.input_indices.get(index as usize).copied();
+    }
+    None
+}
+
+fn locate_witness(index: u64, source: u64, script_group: &ScriptGroup) -> Option<usize> {
+    if source == Source::Input as u64 || source == Source::Output as u64 {
+        return Some(index as usize);
+    } else if source == Source::GroupInput as u64 {
+        return script_group.input_indices.get(index as usize).copied();
+    } else if source == Source::GroupOutput as u64 {
+        return script_group.output_indices.get(index as usize).copied();
     }
     None
 }

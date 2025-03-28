@@ -3,6 +3,7 @@ use ckb_script::ScriptGroupType;
 use ckb_types::{packed::Byte32, prelude::*};
 use ckb_vm_syscall_tracer::{Collector, CollectorKind, CollectorResult, SyscallBasedCollector, TxPartsBasedCollector};
 use clap::{Parser, ValueEnum};
+use std::collections::HashMap;
 use std::io::Read;
 use std::path::Path;
 
@@ -79,15 +80,24 @@ fn run<C: Collector>(collector: C, cli: &Cli) -> Result<(), Box<dyn std::error::
 
     if let Some(script_group) = script_group {
         match collector.collect(&verifier, script_group)? {
-            CollectorResult::Success { sealed_data, cycles } => {
+            CollectorResult::Success { traces, cycles, locators } => {
                 println!("Script group consumes {} cycles.", cycles);
 
                 let output_path = Path::new(&cli.output);
-                let vms = sealed_data.len();
-                for (vm_id, trace) in sealed_data {
-                    let file_path = output_path.join(format!("vm_{}.traces", vm_id));
+                let vms = traces.len();
+                for (key, trace) in traces {
+                    let file_path = output_path.join(format!("vm_{}_{}.traces", key.vm_id, key.generation_id));
                     let bytes: Vec<u8> = trace.into();
                     std::fs::write(file_path, bytes)?
+                }
+                {
+                    let locators_with_string_key: HashMap<String, _> = locators
+                        .into_iter()
+                        .map(|(key, value)| (format!("vm_{}_generation_{}", key.vm_id, key.generation_id), value))
+                        .collect();
+                    let locator_path = output_path.join("locators.json");
+                    let data = serde_json::to_string_pretty(&locators_with_string_key)?;
+                    std::fs::write(locator_path, data)?;
                 }
                 println!("Traces for {} VMs have been written to {}.", vms, cli.output);
             }
