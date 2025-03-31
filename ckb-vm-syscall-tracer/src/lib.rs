@@ -16,7 +16,10 @@ use ckb_script::{
     types::{DebugPrinter, ScriptGroup, SgData, VmContext, VmId, VmState},
     Scheduler, ROOT_VM_ID,
 };
-use ckb_script::{types::Machine, TransactionScriptsVerifier, TxVerifyEnv};
+use ckb_script::{
+    types::{DataPieceId, Machine},
+    TransactionScriptsVerifier, TxVerifyEnv,
+};
 use ckb_traits::{CellDataProvider, ExtensionProvider, HeaderProvider};
 use ckb_types::{
     core::{cell::resolve_transaction, hardfork, EpochNumberWithFraction, HeaderView},
@@ -25,6 +28,7 @@ use ckb_types::{
 };
 use ckb_vm::{
     registers::{A0, A1, A2, A3, A4, A7},
+    snapshot2::DataSource,
     CoreMachine, DefaultMachineRunner, Error, Memory, Register, SupportMachine, Syscalls,
 };
 use clap::{Args, ValueEnum};
@@ -110,7 +114,7 @@ pub struct CollectorKey {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CollectorResult<T> {
-    Success { cycles: u64, traces: HashMap<CollectorKey, T>, locators: HashMap<CollectorKey, BinaryLocator> },
+    Success { cycles: u64, traces: HashMap<CollectorKey, T> },
     Failure { exit_code: i8 },
 }
 
@@ -183,27 +187,7 @@ pub trait Collector: Clone + Default {
             self.postprocess(&mut scheduler)?;
         };
 
-        // TODO: use a wrapper syscall to obtain all binary locators
-        let mut locators = HashMap::default();
-        locators.insert(
-            CollectorKey { vm_id: ROOT_VM_ID, generation_id: 0 },
-            BinaryLocator {
-                index: scheduler
-                    .sg_data()
-                    .tx_info
-                    .extract_referenced_dep_index(&script_group.script)
-                    .map_err(|e| Error::External(format!("extract dep index: {}", e)))? as u64,
-                source: Source::CellDep as u64,
-                offset: 0,
-                length: verifier
-                    .extract_script(&script_group.script)
-                    .map_err(|e| Error::External(format!("extract script error: {}", e)))?
-                    .len() as u32,
-                from_cell: true,
-            },
-        );
-
-        Ok(CollectorResult::Success { cycles, traces: self.seal(), locators })
+        Ok(CollectorResult::Success { cycles, traces: self.seal() })
     }
 }
 
@@ -401,37 +385,18 @@ impl<DL: CellDataProvider + Send + Sync, M: SupportMachine> Syscalls<M> for TxPa
 #[derive(Default, Clone)]
 pub struct SyscallBasedCollector {
     partial_contents: Arc<Mutex<HashMap<CollectorKey, PartialSyscallContent>>>,
-    generations: Arc<Mutex<HashMap<VmId, u64>>>,
     data: Arc<Mutex<HashMap<CollectorKey, traces::Syscalls>>>,
+    generation_tracker: GenerationTracker,
 }
 
 impl SyscallBasedCollector {
     fn fulfill(&self, key: CollectorKey, syscall: traces::Syscall) {
-        let is_terminated =
-            syscall == (traces::Syscall { value: Some(traces::syscall::Value::Terminated(traces::Terminated {})) });
-
         self.partial_contents.lock().expect("lock").remove(&key);
         self.data.lock().expect("lock").entry(key.clone()).or_default().syscalls.push(syscall);
-        if is_terminated {
-            self.increase_generation(key.vm_id);
-        }
-    }
-
-    fn generation(&self, vm_id: VmId) -> u64 {
-        let mut m = self.generations.lock().expect("lock");
-
-        *m.entry(vm_id).or_default()
-    }
-
-    fn increase_generation(&self, vm_id: VmId) {
-        let mut m = self.generations.lock().expect("lock");
-
-        *m.entry(vm_id).or_default() += 1;
     }
 
     pub fn key(&self, vm_id: VmId) -> CollectorKey {
-        let generation_id = self.generation(vm_id);
-        CollectorKey { vm_id, generation_id }
+        self.generation_tracker.key(vm_id)
     }
 }
 
@@ -448,11 +413,14 @@ impl Collector for SyscallBasedCollector {
         DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone + 'static,
         M: SupportMachine + 'static,
     {
-        vec![Box::new(SyscallBasedCollectorVMSyscalls {
-            vm_id: *vm_id,
-            data: data.clone(),
-            syscalls: generate_ckb_syscalls(vm_id, sg_data, vm_context, &debug_printer()),
-        })]
+        // Generation tracker only tracks, never processes syscalls. So
+        // it's safe to concatenate both vectors.
+        let mut syscalls = GenerationTracker::syscall_generator(vm_id, sg_data, vm_context, &data.generation_tracker);
+        for syscall in generate_ckb_syscalls(vm_id, sg_data, vm_context, &debug_printer()) {
+            syscalls.push(syscall);
+        }
+
+        vec![Box::new(SyscallBasedCollectorVMSyscalls { vm_id: *vm_id, data: data.clone(), syscalls })]
     }
 
     fn postprocess<DL, V, M>(&self, scheduler: &mut Scheduler<DL, V, M>) -> Result<(), Error>
@@ -461,6 +429,8 @@ impl Collector for SyscallBasedCollector {
         V: Clone,
         M: DefaultMachineRunner,
     {
+        self.generation_tracker.postprocess(scheduler)?;
+
         let mut fulfills = vec![];
         for (key, partial_content) in self.partial_contents.lock().expect("lock").iter() {
             // For runnable VMs, apply the partial content for syscall traces
@@ -537,7 +507,6 @@ impl<M: SupportMachine> Syscalls<M> for SyscallBasedCollectorVMSyscalls<M> {
 }
 
 enum PartialSyscallContent {
-    Noop,
     ReturnWithCode,
     IoData { data_addr: u64, input_length: u64 },
     Exec,
@@ -591,7 +560,7 @@ fn build_partial_content<M: SupportMachine>(machine: &mut M) -> Result<Option<Pa
                 PartialSyscallContent::InheritedFd { buffer_addr }
             }
             SyscallCode::Close => PartialSyscallContent::ReturnWithCode,
-            SyscallCode::Debug => PartialSyscallContent::Noop,
+            SyscallCode::Debug => return Ok(None),
         })
     } else {
         None
@@ -604,7 +573,6 @@ fn apply_partial_content<M: SupportMachine>(
     machine: &mut M,
 ) -> Result<traces::Syscall, Error> {
     Ok(match partial_content {
-        PartialSyscallContent::Noop => traces::Syscall { value: Some(traces::syscall::Value::Noop(traces::Noop {})) },
         PartialSyscallContent::ReturnWithCode => {
             let return_code = machine.registers()[A0].to_i64();
             return return_syscall(return_code);
@@ -632,14 +600,6 @@ fn apply_partial_content<M: SupportMachine>(
             if return_code != 0 {
                 return return_syscall(return_code);
             }
-            // TODO: a new trace should be used here. In other words, sealed data should use
-            // a pair of 2 keys:
-            //
-            // 1. VM ID
-            // 2. VM generation ID, each successful invocation creates a new VM generation ID
-            //
-            // It might make sense to include the code_hash / hash_type pair for creating a VM
-            // instance in the key as well, so one can group traces based on script.
             traces::Syscall { value: Some(traces::syscall::Value::Terminated(traces::Terminated {})) }
         }
         PartialSyscallContent::Spawn => {
@@ -647,10 +607,7 @@ fn apply_partial_content<M: SupportMachine>(
             if return_code != 0 {
                 return return_syscall(return_code);
             }
-            let spgs_addr = machine.registers()[A4].clone();
-            let process_id_addr_addr = spgs_addr.overflowing_add(&M::REG::from_u64(16));
-            let process_id_addr = machine.memory_mut().load64(&process_id_addr_addr)?;
-            let process_id = machine.memory_mut().load64(&process_id_addr)?.to_u64();
+            let process_id = extract_spawned_process_id(machine)?;
             traces::Syscall { value: Some(traces::syscall::Value::SuccessOutputData(process_id)) }
         }
         PartialSyscallContent::Wait => {
@@ -713,6 +670,348 @@ fn apply_partial_content<M: SupportMachine>(
 
 fn return_syscall(code: i64) -> Result<traces::Syscall, Error> {
     Ok(traces::Syscall { value: Some(traces::syscall::Value::ReturnWithCode(code)) })
+}
+
+#[derive(Default, Clone)]
+pub struct GenerationTracker {
+    pending: Arc<Mutex<HashSet<VmId>>>,
+    generations: Arc<Mutex<HashMap<VmId, u64>>>,
+}
+
+impl GenerationTracker {
+    fn mark_pending(&self, vm_id: VmId) {
+        let mut s = self.pending.lock().expect("lock");
+
+        s.insert(vm_id);
+    }
+
+    fn increase_generation(&self, vm_id: VmId) {
+        let mut m = self.generations.lock().expect("lock");
+
+        *m.entry(vm_id).or_default() += 1;
+    }
+
+    pub fn generation(&self, vm_id: VmId) -> u64 {
+        let mut m = self.generations.lock().expect("lock");
+
+        *m.entry(vm_id).or_default()
+    }
+
+    pub fn key(&self, vm_id: VmId) -> CollectorKey {
+        CollectorKey { vm_id, generation_id: self.generation(vm_id) }
+    }
+}
+
+impl Collector for GenerationTracker {
+    type Trace = ();
+
+    fn syscall_generator<DL, M>(
+        vm_id: &VmId,
+        _sg_data: &SgData<DL>,
+        _vm_context: &VmContext<DL>,
+        data: &Self,
+    ) -> Vec<Box<(dyn Syscalls<M>)>>
+    where
+        DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone + 'static,
+        M: SupportMachine + 'static,
+    {
+        vec![Box::new(GenerationTrackerSyscalls { vm_id: *vm_id, data: data.clone() })]
+    }
+
+    fn postprocess<DL, V, M>(&self, scheduler: &mut Scheduler<DL, V, M>) -> Result<(), Error>
+    where
+        DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone,
+        V: Clone,
+        M: DefaultMachineRunner,
+    {
+        for vm_id in self.pending.lock().expect("lock").drain() {
+            assert_eq!(scheduler.state(&vm_id), Some(VmState::Runnable));
+            let terminated = scheduler.peek(
+                &vm_id,
+                |machine| {
+                    let machine = ReadonlyMachine::new(machine.inner_mut());
+                    Ok(machine.registers()[A0].to_u64() == 0)
+                },
+                |snapshot, sg_data| {
+                    let machine =
+                        ReadonlySnapshotMachine::<_, _, <<M as DefaultMachineRunner>::Inner as CoreMachine>::REG>::new(
+                            snapshot, sg_data,
+                        );
+                    Ok(machine.registers()[A0].to_u64() == 0)
+                },
+            )?;
+            if terminated {
+                self.increase_generation(vm_id);
+            }
+        }
+        Ok(())
+    }
+
+    fn seal(self) -> HashMap<CollectorKey, ()> {
+        HashMap::default()
+    }
+}
+
+struct GenerationTrackerSyscalls {
+    vm_id: VmId,
+    data: GenerationTracker,
+}
+
+impl<M: SupportMachine> Syscalls<M> for GenerationTrackerSyscalls {
+    fn initialize(&mut self, _machine: &mut M) -> Result<(), Error> {
+        Ok(())
+    }
+
+    fn ecall(&mut self, machine: &mut M) -> Result<bool, Error> {
+        if let Ok(code) = SyscallCode::try_from(machine.registers()[A7].to_u64()) {
+            if code == SyscallCode::Exec {
+                self.data.mark_pending(self.vm_id);
+            }
+        }
+        Ok(false)
+    }
+}
+
+#[derive(Default, Clone)]
+pub struct BinaryLocatorCollector<C: Collector> {
+    partial_locators: Arc<Mutex<HashMap<CollectorKey, PartialLocator>>>,
+    data: Arc<Mutex<HashMap<CollectorKey, BinaryLocator>>>,
+    generation_tracker: GenerationTracker,
+    collector: C,
+}
+
+impl<C: Collector + Send + 'static> Collector for BinaryLocatorCollector<C> {
+    type Trace = (BinaryLocator, C::Trace);
+
+    fn syscall_generator<DL, M>(
+        vm_id: &VmId,
+        sg_data: &SgData<DL>,
+        vm_context: &VmContext<DL>,
+        data: &Self,
+    ) -> Vec<Box<(dyn Syscalls<M>)>>
+    where
+        DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone + 'static,
+        M: SupportMachine + 'static,
+    {
+        // Generation tracker only tracks, never processes syscalls. So
+        // it's safe to concatenate both vectors.
+        let mut syscalls = GenerationTracker::syscall_generator(vm_id, sg_data, vm_context, &data.generation_tracker);
+        for syscall in C::syscall_generator(vm_id, sg_data, vm_context, &data.collector) {
+            syscalls.push(syscall);
+        }
+
+        vec![Box::new(BinaryLocatorCollectorSyscalls { vm_id: *vm_id, data: data.clone(), syscalls })]
+    }
+
+    fn postprocess<DL, V, M>(&self, scheduler: &mut Scheduler<DL, V, M>) -> Result<(), Error>
+    where
+        DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone,
+        V: Clone,
+        M: DefaultMachineRunner,
+    {
+        self.generation_tracker.postprocess(scheduler)?;
+        self.collector.postprocess(scheduler)?;
+
+        let sg_data = scheduler.sg_data().clone();
+
+        for (key, partial_locator) in self.partial_locators.lock().expect("lock").drain() {
+            assert_eq!(scheduler.state(&key.vm_id), Some(VmState::Runnable));
+
+            let new_key = self.generation_tracker.key(key.vm_id);
+            let locator = scheduler.peek(
+                &key.vm_id,
+                |machine| {
+                    apply_partial_locator(
+                        &key,
+                        &new_key,
+                        &partial_locator,
+                        &mut ReadonlyMachine::new(machine.inner_mut()),
+                        &sg_data,
+                    )
+                },
+                |snapshot, sg_data| {
+                    apply_partial_locator(
+                            &key,
+                            &new_key,
+                            &partial_locator,
+                            &mut ReadonlySnapshotMachine::<
+                                _,
+                                _,
+                                <<M as DefaultMachineRunner>::Inner as CoreMachine>::REG,
+                            >::new(snapshot, sg_data),
+                            sg_data,
+                        )
+                },
+            )?;
+
+            if let Some((vm_id, locator)) = locator {
+                let key = self.generation_tracker.key(vm_id);
+                self.data.lock().expect("lock").insert(key, locator);
+            }
+        }
+        Ok(())
+    }
+
+    fn seal(self) -> HashMap<CollectorKey, Self::Trace> {
+        let mut self_data = self.data.lock().expect("lock").clone();
+
+        let mut result = HashMap::default();
+        for (key, collector_trace) in self.collector.seal().drain() {
+            if let Some(self_trace) = self_data.remove(&key) {
+                result.insert(key, (self_trace, collector_trace));
+            }
+        }
+        result
+    }
+
+    // BinaryLocatorCollector overrides collect method to mark locator for root script.
+    fn collect(
+        self,
+        verifier: &TransactionScriptsVerifier<Resource, Self, Machine>,
+        script_group: &ScriptGroup,
+    ) -> Result<CollectorResult<Self::Trace>, Error> {
+        let mut scheduler = verifier
+            .create_scheduler(script_group)
+            .map_err(|e| Error::External(format!("scheduler creation error: {}", e)))?;
+
+        let root_locator = BinaryLocator {
+            index: scheduler
+                .sg_data()
+                .tx_info
+                .extract_referenced_dep_index(&script_group.script)
+                .map_err(|e| Error::External(format!("extract dep index: {}", e)))? as u64,
+            source: Source::CellDep as u64,
+            offset: 0,
+            length: verifier
+                .extract_script(&script_group.script)
+                .map_err(|e| Error::External(format!("extract script error: {}", e)))?
+                .len() as u32,
+            from_cell: true,
+        };
+        self.data.lock().expect("lock").insert(CollectorKey { vm_id: ROOT_VM_ID, generation_id: 0 }, root_locator);
+
+        let cycles = loop {
+            let iteration_result = scheduler.iterate()?;
+            if let Some((exit_code, cycles)) = iteration_result.exit_status {
+                if exit_code != 0 {
+                    return Ok(CollectorResult::Failure { exit_code });
+                }
+                break cycles;
+            }
+            self.postprocess(&mut scheduler)?;
+        };
+
+        Ok(CollectorResult::Success { cycles, traces: self.seal() })
+    }
+}
+
+struct BinaryLocatorCollectorSyscalls<C: Collector, M> {
+    vm_id: VmId,
+    data: BinaryLocatorCollector<C>,
+    syscalls: Vec<Box<(dyn Syscalls<M>)>>,
+}
+
+impl<C: Collector + Send, M: SupportMachine> Syscalls<M> for BinaryLocatorCollectorSyscalls<C, M> {
+    fn initialize(&mut self, machine: &mut M) -> Result<(), Error> {
+        for syscall in &mut self.syscalls {
+            syscall.initialize(machine)?;
+        }
+        Ok(())
+    }
+
+    fn ecall(&mut self, machine: &mut M) -> Result<bool, Error> {
+        let key = self.data.generation_tracker.key(self.vm_id);
+        assert!(!self.data.partial_locators.lock().expect("lock").contains_key(&key));
+
+        if let Ok(code) = SyscallCode::try_from(machine.registers()[A7].to_u64()) {
+            if code == SyscallCode::Exec || code == SyscallCode::Spawn {
+                // Tracer requires spawn syscalls, when spawn is enabled,
+                // exec will use V2 implementation, which uses a yield
+                // in syscalls. So we don't have to check the result of
+                // delegate_to_syscalls
+                if let Some(partial_locator) = build_partial_locator(machine) {
+                    self.data.partial_locators.lock().expect("lock").insert(key, partial_locator);
+                }
+            }
+        }
+
+        delegate_to_syscalls(machine, &mut self.syscalls)
+    }
+}
+
+enum PartialLocator {
+    Exec(BinaryLocator),
+    Spawn(BinaryLocator),
+}
+
+fn build_partial_locator<M: SupportMachine>(machine: &mut M) -> Option<PartialLocator> {
+    let regs = machine.registers();
+    let index = regs[A0].to_u64();
+    let source = regs[A1].to_u64();
+    let bounds = regs[A3].to_u64();
+    let offset = (bounds >> 32) as u32;
+    let length = bounds as u32;
+    let from_cell = regs[A2].to_u64() == 0;
+    let locator = BinaryLocator { index, source, offset, length, from_cell };
+
+    if let Ok(code) = machine.registers()[A7].to_u64().try_into() {
+        match code {
+            SyscallCode::Exec => Some(PartialLocator::Exec(locator)),
+            SyscallCode::Spawn => Some(PartialLocator::Spawn(locator)),
+            _ => None,
+        }
+    } else {
+        None
+    }
+}
+
+fn apply_partial_locator<M: SupportMachine, DL: CellDataProvider>(
+    old_key: &CollectorKey,
+    new_key: &CollectorKey,
+    partial_locator: &PartialLocator,
+    machine: &mut M,
+    sg_data: &SgData<DL>,
+) -> Result<Option<(VmId, BinaryLocator)>, Error> {
+    assert_eq!(old_key.vm_id, new_key.vm_id);
+
+    match partial_locator {
+        PartialLocator::Exec(locator) => {
+            if old_key != new_key {
+                Ok(Some((new_key.vm_id, normalize_locator(locator, sg_data)?)))
+            } else {
+                Ok(None)
+            }
+        }
+        PartialLocator::Spawn(locator) => {
+            let process_id = extract_spawned_process_id(machine)?;
+            assert_ne!(process_id, new_key.vm_id);
+
+            Ok(Some((process_id, normalize_locator(locator, sg_data)?)))
+        }
+    }
+}
+
+// Normalize a BinaryLocator so length does not contain 0. While CKB does not
+// need this, it aids debugging purposes.
+fn normalize_locator<DL: CellDataProvider>(
+    locator: &BinaryLocator,
+    sg_data: &SgData<DL>,
+) -> Result<BinaryLocator, Error> {
+    if locator.length > 0 {
+        return Ok(locator.clone());
+    }
+
+    let data_piece_id = DataPieceId::try_from((locator.source, locator.index, if locator.from_cell { 0 } else { 1 }))
+        .map_err(|e| Error::External(format!("Converting data piece error: {}", e)))?;
+
+    let (_, length) = sg_data
+        .load_data(&data_piece_id, locator.offset as u64, 0)
+        .ok_or_else(|| Error::External(format!("Locator {:?} is invalid!", locator)))?;
+
+    let mut locator = locator.clone();
+    locator.length = length as u32;
+
+    Ok(locator)
 }
 
 #[repr(u64)]
@@ -797,4 +1096,13 @@ fn locate_witness(index: u64, source: u64, script_group: &ScriptGroup) -> Option
         return script_group.output_indices.get(index as usize).copied();
     }
     None
+}
+
+fn extract_spawned_process_id<M: SupportMachine>(machine: &mut M) -> Result<u64, Error> {
+    let spgs_addr = machine.registers()[A4].clone();
+    let process_id_addr_addr = spgs_addr.overflowing_add(&M::REG::from_u64(16));
+    let process_id_addr = machine.memory_mut().load64(&process_id_addr_addr)?;
+    let process_id = machine.memory_mut().load64(&process_id_addr)?.to_u64();
+
+    Ok(process_id)
 }

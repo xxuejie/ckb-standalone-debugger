@@ -1,7 +1,6 @@
 syntax = "proto3";
 package generated.traces;
 
-message Noop {}
 message Terminated {}
 
 message IoData {
@@ -33,7 +32,6 @@ message Syscall {
     IoData io_data = 3;
     Terminated terminated = 4;
     Fds fds = 5;
-    Noop noop = 6;
   }
 }
 

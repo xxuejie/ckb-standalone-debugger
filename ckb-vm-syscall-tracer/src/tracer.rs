@@ -1,7 +1,9 @@
 use ckb_mock_tx_types::ReprMockTransaction;
 use ckb_script::ScriptGroupType;
 use ckb_types::{packed::Byte32, prelude::*};
-use ckb_vm_syscall_tracer::{Collector, CollectorKind, CollectorResult, SyscallBasedCollector, TxPartsBasedCollector};
+use ckb_vm_syscall_tracer::{
+    BinaryLocatorCollector, Collector, CollectorKind, CollectorResult, SyscallBasedCollector, TxPartsBasedCollector,
+};
 use clap::{Parser, ValueEnum};
 use std::collections::HashMap;
 use std::io::Read;
@@ -54,16 +56,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     match cli.collector {
-        CollectorKind::Syscall => run(SyscallBasedCollector::default(), &cli),
-        CollectorKind::TxParts => run(TxPartsBasedCollector::default(), &cli),
+        CollectorKind::Syscall => run::<SyscallBasedCollector>(&cli),
+        CollectorKind::TxParts => run::<TxPartsBasedCollector>(&cli),
     }
 }
 
-fn run<C>(collector: C, cli: &Cli) -> Result<(), Box<dyn std::error::Error>>
+fn run<C>(cli: &Cli) -> Result<(), Box<dyn std::error::Error>>
 where
-    C: Collector,
+    C: Collector + Send + 'static,
     Vec<u8>: From<<C as Collector>::Trace>,
 {
+    let collector: BinaryLocatorCollector<C> = BinaryLocatorCollector::default();
+
     // TODO: figure out later if utilities in ckb-debugger crate, such as
     // analyze is worth using.
     let mock_tx: ReprMockTransaction = if cli.tx_file == "-" {
@@ -84,23 +88,23 @@ where
 
     if let Some(script_group) = script_group {
         match collector.collect(&verifier, script_group)? {
-            CollectorResult::Success { traces, cycles, locators } => {
+            CollectorResult::Success { traces, cycles } => {
                 println!("Script group consumes {} cycles.", cycles);
 
                 let output_path = Path::new(&cli.output);
                 let vms = traces.len();
-                for (key, trace) in traces {
+                let mut locators = HashMap::with_capacity(vms);
+                for (key, (locator, trace)) in traces {
+                    let string_key = format!("vm_{}_generation_{}", key.vm_id, key.generation_id);
+                    locators.insert(string_key, locator);
+
                     let file_path = output_path.join(format!("vm_{}_{}.traces", key.vm_id, key.generation_id));
                     let bytes: Vec<u8> = trace.into();
                     std::fs::write(file_path, bytes)?
                 }
                 {
-                    let locators_with_string_key: HashMap<String, _> = locators
-                        .into_iter()
-                        .map(|(key, value)| (format!("vm_{}_generation_{}", key.vm_id, key.generation_id), value))
-                        .collect();
                     let locator_path = output_path.join("locators.json");
-                    let data = serde_json::to_string_pretty(&locators_with_string_key)?;
+                    let data = serde_json::to_string_pretty(&locators)?;
                     std::fs::write(locator_path, data)?;
                 }
                 println!("Traces for {} VMs have been written to {}.", vms, cli.output);
