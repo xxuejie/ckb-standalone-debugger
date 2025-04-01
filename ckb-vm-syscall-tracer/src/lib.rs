@@ -27,9 +27,9 @@ use ckb_types::{
     prelude::*,
 };
 use ckb_vm::{
-    registers::{A0, A1, A2, A3, A4, A7},
+    registers::{A0, A1, A2, A3, A4, A5, A7},
     snapshot2::DataSource,
-    CoreMachine, DefaultMachineRunner, Error, Memory, Register, SupportMachine, Syscalls,
+    CoreMachine, DefaultMachineRunner, Error, FlattenedArgsReader, Memory, Register, SupportMachine, Syscalls,
 };
 use clap::{Args, ValueEnum};
 use int_enum::IntEnum;
@@ -131,6 +131,20 @@ pub trait Collector: Clone + Default {
         DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone + 'static,
         M: SupportMachine + 'static;
 
+    fn preprocess<DL, V, M>(
+        &self,
+        _verifier: &TransactionScriptsVerifier<DL, V, M>,
+        _script_group: &ScriptGroup,
+        _scheduler: &mut Scheduler<DL, V, M>,
+    ) -> Result<(), Error>
+    where
+        DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone,
+        V: Clone,
+        M: DefaultMachineRunner,
+    {
+        Ok(())
+    }
+
     fn postprocess<DL, V, M>(&self, scheduler: &mut Scheduler<DL, V, M>) -> Result<(), Error>
     where
         DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone,
@@ -139,10 +153,10 @@ pub trait Collector: Clone + Default {
 
     fn seal(self) -> HashMap<CollectorKey, Self::Trace>;
 
-    fn build_verifier<T: Into<MockTransaction>>(
-        &self,
-        tx: T,
-    ) -> Result<TransactionScriptsVerifier<Resource, Self, Machine>, Error> {
+    fn build_verifier<T>(&self, tx: T) -> Result<TransactionScriptsVerifier<Resource, Self, Machine>, Error>
+    where
+        T: Into<MockTransaction>,
+    {
         let mock_tx = tx.into();
 
         let resource = Resource::from_mock_tx(&mock_tx).map_err(Error::External)?;
@@ -168,14 +182,21 @@ pub trait Collector: Clone + Default {
         ))
     }
 
-    fn collect(
+    fn collect<DL, V, M>(
         self,
-        verifier: &TransactionScriptsVerifier<Resource, Self, Machine>,
+        verifier: &TransactionScriptsVerifier<DL, V, M>,
         script_group: &ScriptGroup,
-    ) -> Result<CollectorResult<Self::Trace>, Error> {
+    ) -> Result<CollectorResult<Self::Trace>, Error>
+    where
+        DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone,
+        V: Clone,
+        M: DefaultMachineRunner,
+    {
         let mut scheduler = verifier
             .create_scheduler(script_group)
             .map_err(|e| Error::External(format!("scheduler creation error: {}", e)))?;
+        self.preprocess(verifier, script_group, &mut scheduler)?;
+
         let cycles = loop {
             let iteration_result = scheduler.iterate()?;
             if let Some((exit_code, cycles)) = iteration_result.exit_status {
@@ -256,7 +277,7 @@ impl Collector for TxPartsBasedCollector {
     fn seal(self) -> HashMap<CollectorKey, Self::Trace> {
         let mut m = self.data.lock().expect("lock").clone();
         for (key, syscalls) in self.syscall_collector.seal() {
-            m.entry(key).or_default().other_syscalls = syscalls.syscalls;
+            m.entry(key).or_default().other_syscalls = Some(syscalls);
         }
         m
     }
@@ -390,9 +411,17 @@ pub struct SyscallBasedCollector {
 }
 
 impl SyscallBasedCollector {
-    fn fulfill(&self, key: CollectorKey, syscall: traces::Syscall) {
-        self.partial_contents.lock().expect("lock").remove(&key);
-        self.data.lock().expect("lock").entry(key.clone()).or_default().syscalls.push(syscall);
+    // fn fulfill(&self, key: CollectorKey, syscall: traces::Syscall) {
+    //     self.partial_contents.lock().expect("lock").remove(&key);
+    //     self.data.lock().expect("lock").entry(key.clone()).or_default().syscalls.push(syscall);
+    // }
+
+    fn insert_syscall(&self, key: CollectorKey, syscall: traces::Syscall) {
+        self.data.lock().expect("lock").entry(key).or_default().syscalls.push(syscall);
+    }
+
+    fn set_args(&self, key: CollectorKey, args: Vec<Vec<u8>>) {
+        self.data.lock().expect("lock").entry(key).or_default().args = args;
     }
 
     pub fn key(&self, vm_id: VmId) -> CollectorKey {
@@ -431,7 +460,7 @@ impl Collector for SyscallBasedCollector {
     {
         self.generation_tracker.postprocess(scheduler)?;
 
-        let mut fulfills = vec![];
+        let mut fulfills = HashSet::new();
         for (key, partial_content) in self.partial_contents.lock().expect("lock").iter() {
             // For runnable VMs, apply the partial content for syscall traces
             if scheduler.state(&key.vm_id) == Some(VmState::Runnable) {
@@ -449,12 +478,33 @@ impl Collector for SyscallBasedCollector {
                         )
                     },
                 )?;
-                fulfills.push((key.clone(), syscall));
+
+                // For successful exec and spawn, extracts argv
+                match (partial_content, &syscall) {
+                    (
+                        PartialSyscallContent::Spawn { args },
+                        traces::Syscall { value: Some(traces::syscall::Value::SuccessOutputData(process_id)) },
+                    ) => {
+                        let key = self.key(*process_id);
+                        self.set_args(key, args.clone());
+                    }
+                    (
+                        PartialSyscallContent::Exec { args },
+                        traces::Syscall { value: Some(traces::syscall::Value::Terminated(_)) },
+                    ) => {
+                        // When exec succeeds, a new generation is created, a new key is thus required.
+                        let key = self.key(key.vm_id);
+                        self.set_args(key, args.clone());
+                    }
+                    _ => (),
+                }
+
+                self.insert_syscall(key.clone(), syscall);
+                fulfills.insert(key.clone());
             }
         }
-        for (key, syscall) in fulfills {
-            self.fulfill(key, syscall);
-        }
+
+        self.partial_contents.lock().expect("lock").retain(|test_key, _| !fulfills.contains(test_key));
         Ok(())
     }
 
@@ -489,7 +539,7 @@ impl<M: SupportMachine> Syscalls<M> for SyscallBasedCollectorVMSyscalls<M> {
                 Ok(true) => {
                     // Syscall is completed, we can apply partial content now
                     let data = apply_partial_content(&partial_content, &mut ReadonlyMachine::new(machine))?;
-                    self.data.fulfill(key, data.clone());
+                    self.data.insert_syscall(key, data);
                 }
                 Err(Error::Yield) => {
                     // Wait till the VM becomes runnable again to apply partial content
@@ -509,8 +559,8 @@ impl<M: SupportMachine> Syscalls<M> for SyscallBasedCollectorVMSyscalls<M> {
 enum PartialSyscallContent {
     ReturnWithCode,
     IoData { data_addr: u64, input_length: u64 },
-    Exec,
-    Spawn,
+    Exec { args: Vec<Vec<u8>> },
+    Spawn { args: Vec<Vec<u8>> },
     Wait,
     Pipe { fds_addr: u64 },
     Write,
@@ -545,8 +595,17 @@ fn build_partial_content<M: SupportMachine>(machine: &mut M) -> Result<Option<Pa
             }
             SyscallCode::VmVersion => PartialSyscallContent::ReturnWithCode,
             SyscallCode::CurrentCycles => PartialSyscallContent::ReturnWithCode,
-            SyscallCode::Exec => PartialSyscallContent::Exec,
-            SyscallCode::Spawn => PartialSyscallContent::Spawn,
+            SyscallCode::Exec => {
+                let argc = machine.registers()[A4].to_u64();
+                let argv = machine.registers()[A5].to_u64();
+                let args = extract_args(machine, argc, argv)?;
+                PartialSyscallContent::Exec { args }
+            }
+            SyscallCode::Spawn => {
+                let (argc, argv) = extract_spawn_argc_argv(machine)?;
+                let args = extract_args(machine, argc, argv)?;
+                PartialSyscallContent::Spawn { args }
+            }
             SyscallCode::Wait => PartialSyscallContent::Wait,
             SyscallCode::ProcessId => PartialSyscallContent::ReturnWithCode,
             SyscallCode::Pipe => {
@@ -595,14 +654,14 @@ fn apply_partial_content<M: SupportMachine>(
                 })),
             }
         }
-        PartialSyscallContent::Exec => {
+        PartialSyscallContent::Exec { .. } => {
             let return_code = machine.registers()[A0].to_i64();
             if return_code != 0 {
                 return return_syscall(return_code);
             }
             traces::Syscall { value: Some(traces::syscall::Value::Terminated(traces::Terminated {})) }
         }
-        PartialSyscallContent::Spawn => {
+        PartialSyscallContent::Spawn { .. } => {
             let return_code = machine.registers()[A0].to_i64();
             if return_code != 0 {
                 return return_syscall(return_code);
@@ -864,16 +923,17 @@ impl<C: Collector + Send + 'static> Collector for BinaryLocatorCollector<C> {
         result
     }
 
-    // BinaryLocatorCollector overrides collect method to mark locator for root script.
-    fn collect(
-        self,
-        verifier: &TransactionScriptsVerifier<Resource, Self, Machine>,
+    fn preprocess<DL, V, M>(
+        &self,
+        verifier: &TransactionScriptsVerifier<DL, V, M>,
         script_group: &ScriptGroup,
-    ) -> Result<CollectorResult<Self::Trace>, Error> {
-        let mut scheduler = verifier
-            .create_scheduler(script_group)
-            .map_err(|e| Error::External(format!("scheduler creation error: {}", e)))?;
-
+        scheduler: &mut Scheduler<DL, V, M>,
+    ) -> Result<(), Error>
+    where
+        DL: CellDataProvider + HeaderProvider + ExtensionProvider + Send + Sync + Clone,
+        V: Clone,
+        M: DefaultMachineRunner,
+    {
         let root_locator = BinaryLocator {
             index: scheduler
                 .sg_data()
@@ -890,18 +950,7 @@ impl<C: Collector + Send + 'static> Collector for BinaryLocatorCollector<C> {
         };
         self.data.lock().expect("lock").insert(CollectorKey { vm_id: ROOT_VM_ID, generation_id: 0 }, root_locator);
 
-        let cycles = loop {
-            let iteration_result = scheduler.iterate()?;
-            if let Some((exit_code, cycles)) = iteration_result.exit_status {
-                if exit_code != 0 {
-                    return Ok(CollectorResult::Failure { exit_code });
-                }
-                break cycles;
-            }
-            self.postprocess(&mut scheduler)?;
-        };
-
-        Ok(CollectorResult::Success { cycles, traces: self.seal() })
+        Ok(())
     }
 }
 
@@ -1105,4 +1154,22 @@ fn extract_spawned_process_id<M: SupportMachine>(machine: &mut M) -> Result<u64,
     let process_id = machine.memory_mut().load64(&process_id_addr)?.to_u64();
 
     Ok(process_id)
+}
+
+fn extract_spawn_argc_argv<M: SupportMachine>(machine: &mut M) -> Result<(u64, u64), Error> {
+    let spgs_addr = machine.registers()[A4].clone();
+    let argc_addr = spgs_addr.clone();
+    let argc = machine.memory_mut().load64(&argc_addr)?.to_u64();
+    let argv_addr = spgs_addr.overflowing_add(&M::REG::from_u64(8));
+    let argv = machine.memory_mut().load64(&argv_addr)?.to_u64();
+    Ok((argc, argv))
+}
+
+fn extract_args<M: SupportMachine>(machine: &mut M, argc: u64, argv: u64) -> Result<Vec<Vec<u8>>, Error> {
+    let reader = FlattenedArgsReader::new(machine.memory_mut(), M::REG::from_u64(argc), M::REG::from_u64(argv));
+    let mut result = Vec::with_capacity(reader.len());
+    for item in reader {
+        result.push(item?.to_vec());
+    }
+    Ok(result)
 }
