@@ -1,4 +1,4 @@
-use ckb_mock_tx_types::ReprMockTransaction;
+use ckb_mock_tx_types::{MockTransaction, ReprMockTransaction};
 use ckb_script::ScriptGroupType;
 use ckb_types::{packed::Byte32, prelude::*};
 use ckb_vm_syscall_tracer::{
@@ -13,6 +13,12 @@ use std::path::Path;
 enum GroupKind {
     Lock,
     Type,
+}
+
+#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, ValueEnum)]
+enum CellKind {
+    Input,
+    Output,
 }
 
 impl From<GroupKind> for ScriptGroupType {
@@ -50,6 +56,12 @@ struct Cli {
 
     #[arg(long, value_parser = parse_byte32)]
     script_hash: Option<Byte32>,
+
+    #[arg(long, value_enum, default_value_t = CellKind::Input)]
+    cell_kind: CellKind,
+
+    #[arg(long)]
+    cell_index: Option<usize>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -70,7 +82,7 @@ where
 
     // TODO: figure out later if utilities in ckb-debugger crate, such as
     // analyze is worth using.
-    let mock_tx: ReprMockTransaction = if cli.tx_file == "-" {
+    let repr_tx: ReprMockTransaction = if cli.tx_file == "-" {
         let mut buf = String::new();
         std::io::stdin().read_to_string(&mut buf)?;
         serde_json::from_str(&buf)
@@ -78,10 +90,21 @@ where
         let buf = std::fs::read_to_string(&cli.tx_file)?;
         serde_json::from_str(&buf)
     }?;
-    let verifier = collector.build_verifier(mock_tx)?;
+    let mock_tx: MockTransaction = repr_tx.into();
+    let verifier = collector.build_verifier(&mock_tx)?;
 
     let script_group = if let Some(script_hash) = &cli.script_hash {
         verifier.find_script_group(cli.script_group.into(), script_hash)
+    } else if let Some(cell_index) = cli.cell_index {
+        let cell_output = match cli.cell_kind {
+            CellKind::Input => mock_tx.mock_info.inputs.get(cell_index).map(|mock_input| mock_input.output.clone()),
+            CellKind::Output => mock_tx.tx.raw().outputs().get(cell_index),
+        };
+        let script = cell_output.and_then(|cell_output| match cli.script_group {
+            GroupKind::Lock => Some(cell_output.lock()),
+            GroupKind::Type => cell_output.type_().to_opt(),
+        });
+        script.and_then(|script| verifier.find_script_group(cli.script_group.into(), &script.calc_script_hash()))
     } else {
         None
     };
@@ -117,6 +140,7 @@ where
                 hash, group.group_type, group.input_indices, group.output_indices
             );
         }
+        std::process::exit(1);
     }
 
     Ok(())

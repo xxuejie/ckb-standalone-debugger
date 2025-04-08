@@ -154,13 +154,11 @@ pub trait Collector: Clone + Default {
 
     fn seal(self) -> HashMap<CollectorKey, Self::Trace>;
 
-    fn build_verifier<T>(&self, tx: T) -> Result<TransactionScriptsVerifier<Resource, Self, Machine>, Error>
-    where
-        T: Into<MockTransaction>,
-    {
-        let mock_tx = tx.into();
-
-        let resource = Resource::from_mock_tx(&mock_tx).map_err(Error::External)?;
+    fn build_verifier(
+        &self,
+        mock_tx: &MockTransaction,
+    ) -> Result<TransactionScriptsVerifier<Resource, Self, Machine>, Error> {
+        let resource = Resource::from_mock_tx(mock_tx).map_err(Error::External)?;
         let resolved_transaction =
             resolve_transaction(mock_tx.core_transaction(), &mut HashSet::new(), &resource, &resource)
                 .map_err(|e| Error::External(format!("resolving transaction error: {}", e)))?;
