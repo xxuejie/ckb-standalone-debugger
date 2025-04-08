@@ -113,9 +113,10 @@ pub struct CollectorKey {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CollectorResult<T> {
-    Success { cycles: u64, traces: HashMap<CollectorKey, T> },
-    Failure { exit_code: i8 },
+pub struct CollectorResult<T> {
+    pub exit_code: i8,
+    pub cycles: u64,
+    pub traces: HashMap<CollectorKey, T>,
 }
 
 pub trait Collector: Clone + Default {
@@ -197,18 +198,15 @@ pub trait Collector: Clone + Default {
             .map_err(|e| Error::External(format!("scheduler creation error: {}", e)))?;
         self.preprocess(verifier, script_group, &mut scheduler)?;
 
-        let cycles = loop {
+        let (exit_code, cycles) = loop {
             let iteration_result = scheduler.iterate()?;
             if let Some((exit_code, cycles)) = iteration_result.exit_status {
-                if exit_code != 0 {
-                    return Ok(CollectorResult::Failure { exit_code });
-                }
-                break cycles;
+                break (exit_code, cycles);
             }
             self.postprocess(&mut scheduler)?;
         };
 
-        Ok(CollectorResult::Success { cycles, traces: self.seal() })
+        Ok(CollectorResult { exit_code, cycles, traces: self.seal() })
     }
 }
 

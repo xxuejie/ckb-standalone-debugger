@@ -87,33 +87,27 @@ where
     };
 
     if let Some(script_group) = script_group {
-        match collector.collect(&verifier, script_group)? {
-            CollectorResult::Success { traces, cycles } => {
-                println!("Script group consumes {} cycles.", cycles);
+        let CollectorResult { exit_code, cycles, traces } = collector.collect(&verifier, script_group)?;
+        println!("Root VM exit code: {}.", exit_code);
+        println!("Script group consumes {} cycles.", cycles);
 
-                let output_path = Path::new(&cli.output);
-                let vms = traces.len();
-                let mut locators = HashMap::with_capacity(vms);
-                for (key, (locator, trace)) in traces {
-                    let string_key = format!("vm_{}_generation_{}", key.vm_id, key.generation_id);
-                    locators.insert(string_key, locator);
+        let output_path = Path::new(&cli.output);
+        let vms = traces.len();
+        let mut locators = HashMap::with_capacity(vms);
+        for (key, (locator, trace)) in traces {
+            let string_key = format!("vm_{}_generation_{}", key.vm_id, key.generation_id);
+            locators.insert(string_key, locator);
 
-                    let file_path = output_path.join(format!("vm_{}_{}.traces", key.vm_id, key.generation_id));
-                    let bytes: Vec<u8> = trace.into();
-                    std::fs::write(file_path, bytes)?
-                }
-                {
-                    let locator_path = output_path.join("locators.json");
-                    let data = serde_json::to_string_pretty(&locators)?;
-                    std::fs::write(locator_path, data)?;
-                }
-                println!("Traces for {} VMs have been written to {}.", vms, cli.output);
-            }
-            CollectorResult::Failure { exit_code } => {
-                println!("Root VM terminates with non-zero exit code: {}, terminating...", exit_code);
-                std::process::abort();
-            }
+            let file_path = output_path.join(format!("vm_{}_{}.traces", key.vm_id, key.generation_id));
+            let bytes: Vec<u8> = trace.into();
+            std::fs::write(file_path, bytes)?
         }
+        {
+            let locator_path = output_path.join("locators.json");
+            let data = serde_json::to_string_pretty(&locators)?;
+            std::fs::write(locator_path, data)?;
+        }
+        println!("Traces for {} VMs have been written to {}.", vms, cli.output);
     } else {
         println!("Either you didn't specify a script group, or the script group you provided does not exist!");
         println!("Please use one of the following script hash:\n");
