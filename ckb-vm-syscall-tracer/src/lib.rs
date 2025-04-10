@@ -13,7 +13,7 @@ use ckb_chain_spec::consensus::ConsensusBuilder;
 use ckb_mock_tx_types::{MockTransaction, Resource};
 use ckb_script::{
     generate_ckb_syscalls,
-    types::{DebugPrinter, ScriptGroup, SgData, VmContext, VmId, VmState},
+    types::{DebugPrinter, ScriptGroup, SgData, TerminatedResult, VmContext, VmId, VmState},
     Scheduler, ROOT_VM_ID,
 };
 use ckb_script::{
@@ -198,7 +198,7 @@ pub trait Collector: Clone + Default {
 
         let (exit_code, cycles) = loop {
             let iteration_result = scheduler.iterate()?;
-            if let Some((exit_code, cycles)) = iteration_result.exit_status {
+            if let Some(TerminatedResult { exit_code, consumed_cycles: cycles }) = iteration_result.terminated_status {
                 break (exit_code, cycles);
             }
             self.postprocess(&mut scheduler)?;
