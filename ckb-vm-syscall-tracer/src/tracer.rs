@@ -115,13 +115,15 @@ where
         println!("Script group consumes {} cycles.", cycles);
 
         let output_path = Path::new(&cli.output);
+        std::fs::create_dir_all(&output_path).expect("mkdir -p");
+
         let vms = traces.len();
         let mut locators = HashMap::with_capacity(vms);
         for (key, (locator, trace)) in traces {
-            let string_key = format!("vm_{}_generation_{}", key.vm_id, key.generation_id);
-            locators.insert(string_key, locator);
+            let vm_name = format!("vm_{}_{}", key.vm_id, key.generation_id);
+            locators.insert(vm_name.clone(), locator);
 
-            let file_path = output_path.join(format!("vm_{}_{}.traces", key.vm_id, key.generation_id));
+            let file_path = output_path.join(format!("{}.traces", vm_name));
             let bytes: Vec<u8> = trace.into();
             std::fs::write(file_path, bytes)?
         }
