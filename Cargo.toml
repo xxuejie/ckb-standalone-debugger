@@ -6,6 +6,7 @@ members = [
     "ckb-vm-pprof",
     "ckb-vm-pprof-converter",
     "ckb-vm-pprof-protos",
+    "ckb-vm-samply-converter",
     "ckb-vm-signal-profiler",
 ]
 
