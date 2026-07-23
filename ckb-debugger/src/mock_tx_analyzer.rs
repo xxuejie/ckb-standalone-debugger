@@ -46,13 +46,13 @@ fn analyze_cell_dep(data: &ckb_mock_tx_types::ReprMockTransaction) -> Result<(),
             ccnt[k] += 1;
         }
     }
-    for (i, e) in ccnt.iter().enumerate() {
-        if *e != 0 {
-            continue;
-        }
-        let path = vec![Key::Table(String::from("mock_info")), Key::Table(String::from("cell_deps")), Key::Index(i)];
-        return Err(CheckError(format!("Check Fail: {} unused", keyfmt(&path))));
-    }
+    // for (i, e) in ccnt.iter().enumerate() {
+    //     if *e != 0 {
+    //         continue;
+    //     }
+    //     let path = vec![Key::Table(String::from("mock_info")), Key::Table(String::from("cell_deps")), Key::Index(i)];
+    //     return Err(CheckError(format!("Check Fail: {} unused", keyfmt(&path))));
+    // }
     Ok(())
 }
 
